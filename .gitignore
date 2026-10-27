@@ -1,0 +1,57 @@
+# Dependencies
+vendor/
+
+temp/
+
+# Distribution folders
+release/
+
+dist/
+
+# Local development files
+*.local
+*.dev
+
+# IDE files
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# Database files
+data/
+*.db
+
+# Secrets and sensitive files
+*.key
+*.pem
+*.crt
+.env*
+secrets/
+
+# Build and binary files
+*.o
+*.exe
+*.bin
+
+# Coverage files
+coverage.out
+
+# Test files
+*_test.go
+pytest.json
+
+# Temporary backup files
+*.bak
+
+# System-specific files
+macos_ds_store
+Thumbs.db
+
+# Editor temporary files
+*~
