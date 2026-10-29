@@ -480,3 +480,10 @@ Special thanks to the entire Azzurro Technology team for their support and guida
 ---
 *Version 1.0.0 • Last Updated: January 26, 2025*
 *Developed by Azzurro Technology for local AI model execution*
+
+## ISSUES
+- Fix the module structure to allow internal package imports
+- Update go.mod to properly reference internal packages
+- Try building RAPID CLI with corrected module structure
+- Test RAPID CLI analyze command functionality
+- Test RAPID CLI generate and wrap commands
