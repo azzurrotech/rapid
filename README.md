@@ -20,12 +20,14 @@
 1. **CLI Interface** (`cmd/rapid-cli/`)
    - `rapid-cli analyze`: Analyze directories for AI project opportunities
    - `rapid-cli generate`: Generate business customization wrappers
-   - `rapid-cli complete`: Complete multi-step workflows
+   - `rapid-cli wrap`: Analyze and generate in one step
+   - `rapid-cli validate`: Validate configuration and module integrations
+   - `rapid-cli serve`: Start the dashboard and API
 
 2. **Web Interface** (`pkg/web/`)
    - RESTful API for project analysis and wrapper generation
-   - Real-time monitoring dashboard
-   - Integration with all Azzurro modules
+   - Dashboard hosted by song and served by atp at `/rapid/`
+   - Live status of every integrated module
 
 3. **AI Engine** (`pkg/agent/`)
    - `model_loader.go`: Ollama model management and loading
@@ -36,21 +38,37 @@
    - `calculator.go`: Cost calculation and breakdown
    - `logger.go`: Transaction logging and auditing
 
+### Real platform integration
+
+RAPID does not mock the Azzurro modules. `NewRAPIDApplication` opens a real
+`atp.Server`, and uses what it mounts:
+
+| Module | What RAPID uses it for |
+|--------|------------------------|
+| **ATP** | The hosted platform itself: routing, secrets vault, header policy, function registry, head/PWA injection |
+| **POD** | Persistent records in the `projects`, `analyses` and `wrappers` tables |
+| **SONG** | The dashboard document, published as the `rapid` silo and served at `/rapid/` |
+| **SHEPHERD** | Revocable capability tokens for `POST /api/share`, verified by shepherd itself |
+
+The module versions are pinned by `go.mod` with `replace` directives pointing
+at the sibling `stenella/atp` source tree, so RAPID and STENELLA run the same
+platform code.
+
 ### Technical Specifications
 
 - **Language**: Go
-- **Dependencies**: Go standard library only (no third-party)
+- **Dependencies**: Go standard library plus the first-party platform modules
 - **Web Interface**: Baseline HTML/CSS/JS (no frameworks)
 - **License**: MIT
-- **Execution**: Local Ollama models only
+- **Execution**: Local only; no cloud dependency
 
 ## Installation and Setup
 
 ### Prerequisites
 
-- Go 1.21+
-- Ollama service (http://localhost:11434)
-- Docker (optional, for testing)
+- Go 1.22+
+- The sibling `stenella/atp` checkout (for the platform modules)
+- Ollama service (http://localhost:11434), when model-backed analysis is used
 
 ### Building and Running
 
@@ -74,11 +92,17 @@ mkdir -p ./models ./cache ./templates ./generated_wrappers
 ### Web Server
 
 ```bash
-# Start the web server
-go run ./cmd/rapid-server/main.go
+go build -o rapid-server ./cmd/rapid-server
+RAPID_DATA_DIR=./data RAPID_PORT=8080 ./rapid-server
 
-# Access the dashboard at http://localhost:8080
+# Dashboard: http://localhost:8080/rapid/  (served by song)
+# API:       http://localhost:8080/api/health
+# POD:       http://localhost:8080/pod/      (served by pod)
 ```
+
+`/` redirects to `/rapid/`, so there is one dashboard document rather than two.
+The master secret comes from `RAPID_SECRET` (at least 32 bytes) or is generated
+once and kept at `<data-dir>/.rapid-secret`.
 
 ## Commands
 
@@ -126,134 +150,190 @@ FLAGS:
 rapid-cli generate "Docker" "go-wrapper" --output-dir ./business-wrappers
 ```
 
-### rapid-cli complete
+### rapid-cli wrap
 
-Complete a multi-step workflow (placeholder for future functionality).
+Analyze a directory and generate the wrapper its dominant language calls for, in
+one step.
+
+```bash
+rapid-cli wrap <path>
+```
+
+### rapid-cli validate
+
+Check the configuration and exercise each module with a real operation (a pod
+write/read, a shepherd token, a song store lookup, an atp vault/registry check).
+
+```bash
+rapid-cli validate
+```
+
+### rapid-cli serve
+
+Start the dashboard and API on the real atp platform.
+
+```bash
+rapid-cli serve --data ./data --host localhost --port 8080
+```
 
 ## API Endpoints
 
-### Web Server API
+All endpoints return JSON. Errors use `{"error": "..."}` with a 4xx/5xx status.
 
-All API endpoints return JSON responses with consistent structure.
+### Health
 
-#### Health Check
 ```
 GET /api/health
+GET /api/health?check=1
 ```
 
-**Response:**
 ```json
 {
   "status": "healthy",
-  "timestamp": "2025-01-26T12:00:00Z",
+  "ok": true,
+  "timestamp": "2026-10-29T12:00:00Z",
   "version": "1.0.0",
-  "platform": "azimuthro",
-  "components": {
-    "rapid": true,
-    "pod": true,
-    "shepherd": true,
-    "song": true,
-    "atp": true
-  }
+  "platform": "azzurro",
+  "data_dir": "./data",
+  "components": { "rapid": true, "atp": true, "pod": true, "shepherd": true, "song": true, "secrets": true, "registry": true },
+  "module_report": { "status": "healthy", "version": "…", "components": [ … ] }
 }
 ```
 
-#### List Projects
+The module checks are `atp.Server.Health()`, so every atp application reports the
+same components. `?check=1` (or `?probe=1`) runs `atp.Server.Check()` instead: it
+writes, reads and deletes a disposable pod record and vault secret, and issues
+and verifies a shepherd token. `status` is `degraded` when any component fails.
+
+### Projects
+
 ```
 GET /api/projects
+POST /api/projects
 ```
 
-**Response:**
+`GET` returns the catalog stored in pod. `POST` stores one project:
+
 ```json
-{
-  "projects": [
-    {
-      "name": "Go",
-      "lang": "Go",
-      "type": "module",
-      "size": 10240,
-      "complexity": 2.5,
-      "has_tests": true,
-      "has_ci": true,
-      "status": "active"
-    }
-  ]
-}
+{ "name": "Example", "description": "…", "language": "Go", "status": "active" }
 ```
 
-#### Analyze Project
+### Analyze a project
+
 ```
 POST /api/projects/analyze
 ```
 
-**Request Body:**
+```json
+{ "path": "/absolute/path/to/project" }
+```
+
+The response is the complete analysis: file inventory, complexity, test/CI
+detection, recommendations, integration mapping, proposed files and pricing.
+The run is also recorded in pod's `analyses` table.
+
+### Wrappers
+
+```
+GET  /api/wrappers
+POST /api/wrappers
+```
+
+`POST` generates a wrapper and records it:
+
+```json
+{ "path": "/absolute/path/to/project", "template_type": "go-wrapper", "enterprise": false }
+```
+
+`template_type` is optional; without it RAPID picks the template from the
+languages present (Go, Python, Node.js or generic).
+
+### Analyses
+
+```
+GET /api/analyses
+```
+
+Recorded analysis runs, newest first.
+
+### Integrations
+
+```
+GET /api/integrations
+```
+
+```json
+{ "ok": true, "failures": [] }
+```
+
+### Share
+
+```
+POST /api/share
+```
+
+```json
+{ "kind": "wrapper", "id": "abc123", "ttl": "168h" }
+```
+
+Returns a shepherd capability token whose metadata names the target:
+
+```json
+{ "token": "…", "kind": "wrapper", "id": "abc123", "jti": "…", "issuedAt": "…", "expires": "…" }
+```
+
+### Revoke a share
+
+```
+POST /api/share/revoke
+```
+
+```json
+{ "token": "…" }
+```
+
+The token value is the credential, so a caller can cancel a link it no longer
+has the original response for. The call resolves the token through
+`shepherd/capability` and revokes its `jti` in shepherd's deny list:
+
+```json
+{ "revoked": true, "kind": "wrapper", "id": "abc123" }
+```
+
+`?token=…` works as an alternative to the JSON body. Revocation is shepherd's
+normal deny list: in memory, and effective for every host in the process.
+
+### Export
+
+```
+GET /api/export?table=projects&format=csv
+GET /api/export?table=analyses&format=json&columns=id,project_name,analyzed_at
+```
+
+Downloads one of the `projects`, `analyses` or `wrappers` record sets using
+**pod's shared export writer** (`pod.ExportRecords`): the same JSON document
+shape and the same BOM-prefixed, properly quoted CSV the platform uses
+everywhere. `format` is `json` (default) or `csv`; `columns` is an optional
+comma-separated projection. The response carries `Content-Disposition:
+attachment; filename=rapid-<table>.<ext>`. An unknown table or format is a
+`400`, never a truncated file.
+
+### Metrics
+
+```
+GET /api/metrics
+```
+
 ```json
 {
-  "name": "MyProject",
-  "lang": "Go",
-  "type": "module",
-  "size": 10240,
-  "complexity": 2.5,
-  "has_tests": true,
-  "has_ci": true
+  "uptime_seconds": 3600,
+  "counts": { "projects": 12, "analyses": 4, "wrappers": 3 },
+  "pricing": { "total_transactions": 4, "total_revenue": 0.0123, "average_cost": 0.0031, … }
 }
 ```
 
-**Response:**
-```json
-{
-  "analysis": {
-    "project_name": "MyProject",
-    "complexity": 2.5,
-    "has_tests": true,
-    "has_ci": true,
-    "recommendations": [
-      {
-        "priority": "MEDIUM",
-        "title": "Go project detected",
-        "description": "Good opportunity for Go wrapper generation",
-        "type": "wrapper",
-        "estimated_tokens": 1500,
-        "estimated_cost": 3.0
-      }
-    ],
-    "generated_code": [
-      {
-        "file": "business_wrapper.go",
-        "language": "Go",
-        "size": 2048,
-        "description": "Business customization wrapper"
-      }
-    ]
-  },
-  "pricing": {
-    "estimated_tokens": 4000,
-    "estimated_cost": 5.0,
-    "cache_efficiency": 0.8,
-    "currency": "USD"
-  }
-}
-```
-
-#### List Wrappers
-```
-GET /api/wrappers
-```
-
-**Response:**
-```json
-{
-  "wrappers": [
-    {
-      "name": "Go Wrapper",
-      "type": "go",
-      "description": "Standard Go wrapper for Azzurro platform integration",
-      "supported_projects": ["Go", "Python", "Docker"],
-      "template_file": "go-wrapper.template"
-    }
-  ]
-}
-```
+Counts are read from pod, not from a second counter that could drift; pricing
+comes from RAPID's own `PriceLogger`.
 
 ## Pricing and Economics
 
@@ -283,33 +363,40 @@ RAPID operates on a pay-as-you-go model with competitive pricing:
 
 ## Integration with Azzurro Modules
 
-### POD (Project Operations Database)
+### POD (record store)
 
-RAPID integrates with POD for:
-- Project metadata storage and retrieval
-- Persistent analysis results
-- Cross-project analytics
+RAPID uses `atp.Server.Pod()` for:
+- Project metadata (`projects` table)
+- Every analysis run (`analyses` table, including the full result as JSON)
+- Every generated wrapper (`wrappers` table)
+- Every export (`GET /api/export`), through `pod.ExportRecords` rather than a
+  second CSV/JSON writer
 
-### SHEPHERD (Security and Compliance)
+The tables are created and widened with `EnsureStructSchema`, so adding a field
+to a record needs no migration.
 
-RAPID works with SHEPHERD for:
-- Wrapper security scanning
-- Compliance checks
-- Vulnerability assessment
+### SHEPHERD (capabilities and policy)
 
-### SONG (Server Orchestration and Governance)
+RAPID uses `atp.Server.Shepherd()` for:
+- Revocable share tokens (`POST /api/share` and `POST /api/share/revoke`, backed by `shepherd/capability`)
+- The platform's firewall, rate limiting and token verification
+- Token ownership tracking, available to any host that reads the same claims
 
-RAPID integrates with SONG for:
-- Web server orchestration
-- API gateway management
-- Service governance
+### SONG (hosting)
 
-### ATP (Adaptive Task Processing)
+RAPID uses `atp.Server.Song()` for:
+- Publishing the dashboard into the `rapid` silo, served at `/rapid/`
+- The shared `/_song/viewkit.js` library the dashboard loads for relative time
+- The same static/template/component pipeline every other hosted app uses
+- Offline-friendly assets with no external request
 
-RAPID leverages ATP for:
-- Workflow automation
-- Task distribution
-- Resource optimization
+### ATP (platform)
+
+RAPID runs on atp for:
+- Request routing and hosted-application discovery
+- The encrypted secrets vault and header policy
+- The serverless function registry
+- Generated PWA head fragments and capability surfaces
 
 ## Templates and Code Generation
 
@@ -326,52 +413,44 @@ RAPID generates comprehensive business customization wrappers with the following
 
 ### Generated File Structure
 
-For a Go project wrapper:
+Every generation writes the wrapper and its metadata, named from the project,
+template and date:
+
 ```
 generated_wrappers/
-├── business_wrapper.go                    # Core wrapper implementation
-├── business_wrapper.go.metadata.json       # Wrapper metadata
-├── healthcheck.sh                         # Health check script
-├── entrypoint.sh                          # Docker entrypoint
-├── Makefile                               # Build automation
-└── README.md                              # Documentation
+├── my-project_go-wrapper_20261029.go
+└── my-project_go-wrapper_20261029.go.metadata.json
 ```
+
+The actual files a project requires are listed in the analysis result
+(`generated_code`); the Go, Python and Node.js templates each produce a
+self-contained service that reports the Azzurro module integration.
 
 ## Development and Testing
 
 ### Running Tests
 
 ```bash
-# Install dependencies (if any)
-go mod tidy
-
-# Run tests
-mkdir -p ./test_data
-cp -r sample_projects ./test_data/
-go test ./... -v
+go test ./...
+go vet ./...
 ```
 
-### Sample Projects
+The tests build a real platform on a temporary data directory: they exercise
+pod persistence, a zipped-up shepherd token, song hosting and the HTTP surface.
+No mock module is used or needed.
 
-Sample project structures for testing:
+### Integration tests
 
-```bash
-# Create test directory structure
-mkdir -p ./test_data/go-project
-cmp -r sample/go/ ./test_data/go-project/
-
-mkdir -p ./test_data/python-project
-ncmp -r sample/python/ ./test_data/python-project/
-
-mkdir -p ./test_data/js-project
-ncmp -r sample/javascript/ ./test_data/js-project/
-```
+`app_test.go` checks that `NewRAPIDApplication` mounts the real pod, song and
+shepherd services and that a token issued by RAPID verifies with shepherd's own
+manager. `pkg/web/server_test.go` drives the API and the song-hosted dashboard
+through `httptest`, and `pkg/agent/` covers the scanner and every template.
 
 ### Development Workflow
 
 1. **Code Analysis**: Use `rapid-cli analyze` to understand existing code
-2. **Wrapper Generation**: Use `rapid-cli generate` to create business solutions
-3. **Testing**: Validate generated wrappers with integration tests
+2. **Wrapper Generation**: Use `rapid-cli generate` or `rapid-cli wrap`
+3. **Validation**: Use `rapid-cli validate` before shipping
 4. **Documentation**: Update generated documentation
 
 ## Performance Considerations
@@ -394,22 +473,23 @@ ncmp -r sample/javascript/ ./test_data/js-project/
 
 ### System Metrics
 
-RAPID collects and reports the following metrics:
+RAPID collects and reports the following metrics (see `GET /api/metrics`):
 
 - **Analysis Performance**: Time taken for project analysis
 - **Wrapper Generation Speed**: Rate of wrapper creation
-- **Cost Tracking**: Real-time cost monitoring
-- **Cache Efficiency**: Hit/Miss ratios
-- **Resource Utilization**: CPU, memory, disk usage
+- **Cost Tracking**: Real-time cost monitoring (`pricing.total_revenue`)
+- **Cache Efficiency**: Hit/Miss ratios (`pricing.cache_hit_rate`)
+- **Resource Utilization**: uptime, and the pod record counts per table
 
 ### Health Monitoring
 
 The web interface provides:
-- **Real-time status dashboard**
-- **API health checking**
-- **Performance metrics**
-- **Error tracking**
-- **Usage analytics**
+- **Real-time status dashboard** (component KPIs from `atp.Server.Health()`)
+- **API health checking** (`/api/health`, with `?check=1` for a live probe)
+- **Performance metrics** (`/api/metrics`)
+- **Error tracking** (the JSON error envelope on every endpoint)
+- **Usage analytics** (record counts read from pod)
+- **Export controls** and **share revocation** in the dashboard
 
 ## Future Enhancements
 

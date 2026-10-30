@@ -42,10 +42,6 @@ secrets/
 # Coverage files
 coverage.out
 
-# Test files
-*_test.go
-pytest.json
-
 # Temporary backup files
 *.bak
 

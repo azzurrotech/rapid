@@ -1,210 +1,162 @@
+// Command rapid-cli is the RAPID command-line front end. It runs the same
+// application and the same real atp platform as the web server.
 package main
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "log"
-    "os"
-    "path/filepath"
-    "time"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
 
-    rapid "rapid.ai"
+	rapid "rapid.ai"
+	"rapid.ai/pkg/cli"
+	"rapid.ai/pkg/web"
 )
 
-// RAPIDCLIOptions holds the configuration for the RAPID CLI
-type RAPIDCLIOptions struct {
-    Version       string        `json:"version"`
-    Port          int           `json:"port"`
-    Host          string        `json:"host"`
-    MaxTokens     int           `json:"max_tokens"`
-    MaxConcurrency int          `json:"max_concurrency"`
-    CacheSizeMB   int           `json:"cache_size_mb"`
-}
-
-// RAPIDCLI holds the CLI application context
-type RAPIDCLI struct {
-    options *RAPIDCLIOptions
-    app     *rapid.RAPIDApplication
-}
-
-// NewRAPIDCLI creates a new RAPID CLI instance
-func NewRAPIDCLI(options *RAPIDCLIOptions) (*RAPIDCLI, error) {
-    // Initialize RAPID application
-    appOptions := &rapid.RAPIDConfig{
-        Version:           options.Version,
-        Port:              options.Port,
-        Host:              options.Host,
-        MaxConcurrentOps:  10,
-        CacheSizeMB:       options.CacheSizeMB,
-        MaxTokens:         options.MaxTokens,
-        SecretRotation:    "hourly",
-        IntegrationTimeout: 30 * time.Second,
-    }
-
-    app, err := rapid.NewRAPIDApplication(appOptions)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create RAPID application: %w", err)
-    }
-
-    return &RAPIDCLI{
-        options: options,
-        app:     app,
-    }, nil
-}
-
-// Run executes the RAPID CLI
-func (cli *RAPIDCLI) Run(command string, args []string) error {
-    switch command {
-    case "analyze":
-        return cli.analyzeCommand(args)
-    case "generate":
-        return cli.generateCommand(args)
-    case "validate":
-        return cli.validateCommand(args)
-    case "wrap":
-        return cli.wrapCommand(args)
-    default:
-        return fmt.Errorf("unknown command: %s", command)
-    }
-}
-
-// analyzeCommand handles the analyze command
-func (cli *RAPIDCLI) analyzeCommand(args []string) error {
-    if len(args) < 1 {
-        return fmt.Errorf("usage: rapid-cli analyze [path]")
-    }
-
-    targetPath := args[0]
-    if targetPath <= "." {
-        targetPath = "."
-    }
-
-    absPath, err := filepath.Abs(targetPath)
-    if err != nil {
-        return fmt.Errorf("failed to get absolute path: %w", err)
-    }
-
-    fmt.Printf("Analyzing %s...\n", absPath)
-
-    // Perform the analysis
-    result, err := cli.app.AnalyzeProject(absPath)
-    if err != nil {
-        return fmt.Errorf("analysis failed: %w", err)
-    }
-
-    // Print results
-    output, _ := json.MarshalIndent(result, "", "  ")
-    fmt.Println(string(output))
-
-    return nil
-}
-
-// generateCommand handles the generate command
-func (cli *RAPIDCLI) generateCommand(args []string) error {
-    if len(args) < 1 {
-        return fmt.Errorf("usage: rapid-cli generate [path]")
-    }
-
-    targetPath := args[0]
-    absPath, err := filepath.Abs(targetPath)
-    if err != nil {
-        return fmt.Errorf("failed to get absolute path: %w", err)
-    }
-
-    fmt.Printf("Generating wrapper for %s...\n", absPath)
-
-    // Extract wrapper definition
-    wrapperDef, err := cli.app.GenerateWrapper(absPath)
-    if err != nil {
-        return fmt.Errorf("wrapper generation failed: %w", err)
-    }
-
-    // Print results
-    output, _ := json.MarshalIndent(wrapperDef, "", "  ")
-    fmt.Println(string(output))
-
-    return nil
-}
-
-// validateCommand handles the validate command
-func (cli *RAPIDCLI) validateCommand(args []string) error {
-    fmt.Println("Validating RAPID configuration...")
-
-    if err := cli.app.ValidateConfiguration(); err != nil {
-        return fmt.Errorf("validation failed: %w", err)
-    }
-
-    fmt.Println("Configuration is valid!")
-
-    // Validate integrations
-    integrationsValid := cli.app.ValidateIntegrations()
-    if integrationsValid {
-        fmt.Println("Integrations are valid!")
-    } else {
-        fmt.Println("Warning: Some integrations may not be working correctly")
-    }
-
-    return nil
-}
-
-// wrapCommand handles the wrap command
-func (cli *RAPIDCLI) wrapCommand(args []string) error {
-    if len(args) < 1 {
-        return fmt.Errorf("usage: rapid-cli wrap [path]")
-    }
-
-    targetPath := args[0]
-    absPath, err := filepath.Abs(targetPath)
-    if err != nil {
-        return fmt.Errorf("failed to get absolute path: %w", err)
-    }
-
-    fmt.Printf("Creating wrapper for %s...\n", absPath)
-
-    // Create wrapper (full generation + packaging)
-    wrapperPath, err := cli.app.CreateWrapper(absPath)
-    if err != nil {
-        return fmt.Errorf("wrapper creation failed: %w", err)
-    }
-
-    fmt.Printf("Wrapper created at: %s\n", wrapperPath)
-
-    return nil
-}
-
 func main() {
-    // Default options
-    options := &RAPIDCLIOptions{
-        Version:       "1.0.0",
-        Port:          8080,
-        Host:          "localhost",
-        MaxTokens:     4096,
-        MaxConcurrency: 10,
-        CacheSizeMB:   512,
-    }
+	cfg := rapid.DefaultConfig()
+	if v := os.Getenv("RAPID_DATA_DIR"); v != "" {
+		cfg.DataDir = v
+	}
+	if v := os.Getenv("RAPID_HOST"); v != "" {
+		cfg.Host = v
+	}
+	if v := os.Getenv("RAPID_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Port = n
+		}
+	}
 
-    cli, err := NewRAPIDCLI(options)
-    if err != nil {
-        log.Fatalf("Failed to initialize CLI: %v", err)
-    }
+	args, flags := splitArgs(os.Args[1:])
+	if len(args) == 0 {
+		usage()
+		os.Exit(1)
+	}
+	applyFlags(cfg, flags)
+	command := args[0]
+	args = args[1:]
 
-    // Determine command and args from os.Args
-    if len(os.Args) < 2 {
-        fmt.Println("Usage: rapid-cli [command] [args]")
-        fmt.Println("Available commands:")
-        fmt.Println("  analyze [path] - Analyze a project for AI opportunities")
-        fmt.Println("  generate [path] - Generate wrapper definition")
-        fmt.Println("  validate - Validate RAPID configuration")
-        fmt.Println("  wrap [path] - Create complete wrapper")
-        os.Exit(1)
-    }
+	app, err := rapid.NewRAPIDApplication(cfg)
+	if err != nil {
+		log.Fatalf("RAPID: %v", err)
+	}
+	defer app.Close()
 
-    command := os.Args[1]
-    args := os.Args[2:]
+	if command == "serve" {
+		if err := web.NewWebServer(app, cfg.Host, strconv.Itoa(cfg.Port)).Start(); err != nil {
+			log.Fatalf("RAPID server: %v", err)
+		}
+		return
+	}
 
-    // Execute command
-    if err := cli.Run(command, args); err != nil {
-        log.Fatalf("Error: %v", err)
-    }
+	cmds := cli.NewCommands(app)
+	ctx := &cli.CommandContext{
+		App:       app,
+		Args:      args,
+		Flags:     flags,
+		Writer:    os.Stdout,
+		ErrWriter: os.Stderr,
+		Config:    &cli.CLIConfig{Version: cfg.Version, LogLevel: "info"},
+	}
+
+	switch command {
+	case "validate":
+		if err := app.ValidateConfiguration(); err != nil {
+			fmt.Fprintln(os.Stderr, "configuration:", err)
+			os.Exit(1)
+		}
+		fmt.Println("configuration: ok")
+		if failures := app.IntegrationFailures(); len(failures) > 0 {
+			fmt.Println("integrations: degraded")
+			for _, f := range failures {
+				fmt.Println("  -", f)
+			}
+			os.Exit(1)
+		}
+		fmt.Println("integrations: ok (atp, pod, shepherd, song)")
+		return
+	case "wrap":
+		if len(args) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: rapid-cli wrap <path>")
+			os.Exit(1)
+		}
+		path, err := app.CreateWrapper(args[0])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("wrapper created at:", path)
+		return
+	}
+
+	if err := cmds.ExecuteCommand(command, ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
+// splitArgs separates flags from positional arguments. Both "--name value" and
+// "--name=value" are accepted, as is the short form.
+func splitArgs(argv []string) ([]string, map[string]string) {
+	args := make([]string, 0, len(argv))
+	flags := map[string]string{}
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			args = append(args, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			flags[name[:eq]] = name[eq+1:]
+			continue
+		}
+		if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+			flags[name] = argv[i+1]
+			i++
+			continue
+		}
+		flags[name] = "true"
+	}
+	return args, flags
+}
+
+func applyFlags(cfg *rapid.RAPIDConfig, flags map[string]string) {
+	if v := flags["data"]; v != "" {
+		cfg.DataDir = v
+	}
+	if v := flags["host"]; v != "" {
+		cfg.Host = v
+	}
+	if v := flags["port"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Port = n
+		}
+	}
+	if v := flags["output-dir"]; v != "" {
+		cfg.OutputDir = v
+	}
+	if v := flags["template-dir"]; v != "" {
+		cfg.TemplateDir = v
+	}
+	if v := flags["enterprise"]; v == "true" || v == "1" {
+		cfg.Enterprise = true
+	}
+}
+
+func usage() {
+	fmt.Println("RAPID - Azzurro Technology AI Analysis and Wrapper Generation")
+	fmt.Println()
+	fmt.Println("Usage: rapid-cli <command> [arguments] [flags]")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  analyze <path>            Analyze a project directory")
+	fmt.Println("  generate <name> <type>    Generate a wrapper")
+	fmt.Println("  validate                  Validate configuration and integrations")
+	fmt.Println("  wrap <path>               Analyze and generate in one step")
+	fmt.Println("  serve                     Start the web dashboard and API")
+	fmt.Println("  version                   Print the version")
+	fmt.Println()
+	fmt.Println("Flags: --data DIR --host HOST --port N --output-dir DIR --enterprise")
 }

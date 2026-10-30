@@ -1,398 +1,359 @@
 package cli
 
 import (
-    "encoding/json"
-    "fmt"
-    "io"
-    "os"
-    "path/filepath"
-    "strings"
-    "text/tabwriter"
-    "time"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	rapid "rapid.ai"
+	"rapid.ai/pkg/agent"
 )
 
-// Command represents a CLI command
+// Command is one CLI verb.
 type Command struct {
-    Name        string
-    Description  string
-    Usage        string
-    Flags        []Flag
-    Action       func(*CommandContext) error
+	Name        string
+	Description string
+	Usage       string
+	Flags       []Flag
+	Action      func(*CommandContext) error
 }
 
-// Flag represents a command line flag
+// Flag is one command-line option.
 type Flag struct {
-    Name        string
-    Short       string
-    Description  string
-    Default     string
-    Required    bool
+	Name        string
+	Short       string
+	Description string
+	Default     string
+	Required    bool
 }
 
-// CommandContext holds the context for command execution
+// CommandContext carries the parsed invocation.
 type CommandContext struct {
-    Args      []string
-    Flags     map[string]string
-    Writer    io.Writer
-    ErrWriter io.Writer
-    Config    *CLIConfig
+	App       *rapid.RAPIDApplication
+	Args      []string
+	Flags     map[string]string
+	Writer    io.Writer
+	ErrWriter io.Writer
+	Config    *CLIConfig
 }
 
-// CLIConfig holds the CLI configuration
+// CLIConfig is the small set of options the command layer owns.
 type CLIConfig struct {
-    Version      string
-    HomeDir      string
-    ConfigFile   string
-    Debug        bool
-    LogLevel     string
+	Version    string
+	HomeDir    string
+	ConfigFile string
+	Debug      bool
+	LogLevel   string
 }
 
-// Commands is the master list of available commands
+// Commands is the command table.
 type Commands struct {
-    Analyze      *Command
-    Generate     *Command
-    Complete     *Command
-    Help         *Command
-    Version      *Command
+	app      *rapid.RAPIDApplication
+	Analyze  *Command
+	Generate *Command
+	Complete *Command
+	Help     *Command
+	Version  *Command
 }
 
-// NewCommands creates a new commands manager
-func NewCommands(config *CLIConfig) *Commands {\n    return &	Commands{
-        Analyze: createAnalyzeCommand(),
-        Generate: createGenerateCommand(),
-        Complete: createCompleteCommand(),
-        Help: createHelpCommand(),
-        Version: createVersionCommand(),
-    }
+// NewCommands builds the table around a running application.
+func NewCommands(app *rapid.RAPIDApplication) *Commands {
+	return &Commands{
+		app:      app,
+		Analyze:  createAnalyzeCommand(),
+		Generate: createGenerateCommand(),
+		Complete: createCompleteCommand(),
+		Help:     createHelpCommand(),
+		Version:  createVersionCommand(),
+	}
 }
 
-// ExecuteCommand executes a command with the given context
+// ExecuteCommand runs one command.
 func (cm *Commands) ExecuteCommand(cmdName string, ctx *CommandContext) error {
-    switch strings.ToLower(cmdName) {\n    case "analyze":
-        return cm.Analyze.Action(ctx)
-    case "generate":
-        return cm.Generate.Action(ctx)
-    case "complete":
-        return cm.Complete.Action(ctx)
-    case "help":
-        return cm.Help.Action(ctx)
-    case "version":
-        return cm.Version.Action(ctx)
-    default:
-        return fmt.Errorf("unknown command: %s", cmdName)
-    }
+	if ctx.App == nil {
+		ctx.App = cm.app
+	}
+	switch strings.ToLower(cmdName) {
+	case "analyze":
+		return cm.Analyze.Action(ctx)
+	case "generate":
+		return cm.Generate.Action(ctx)
+	case "complete":
+		return cm.Complete.Action(ctx)
+	case "help":
+		return cm.Help.Action(ctx)
+	case "version":
+		return cm.Version.Action(ctx)
+	default:
+		return fmt.Errorf("unknown command: %s", cmdName)
+	}
 }
 
-// createAnalyzeCommand creates the analyze command
 func createAnalyzeCommand() *Command {
-    return & Command{
-        Name:        "analyze",
-        Description: "Analyze a project directory for AI opportunities",
-        Usage:       "rapid-cli analyze <path> [flags]",
-        Flags: []Flag{
-            {Name: "output", Short: "o", Description: "Output format (json|text)", Default: "text", Required: false},
-            {Name: "verbose", Short: "v", Description: "Enable verbose output", Default: "false", Required: false},
-            {Name: "max-tokens", Description: "Maximum tokens for analysis", Default: "4000", Required: false},
-        },
-        Action: func(ctx *CommandContext) error {
-            return handleAnalyzeCommand(ctx)
-        },
-    }
+	return &Command{
+		Name:        "analyze",
+		Description: "Analyze a project directory for AI opportunities",
+		Usage:       "rapid-cli analyze <path> [flags]",
+		Flags: []Flag{
+			{Name: "output", Short: "o", Description: "Output format (json|text)", Default: "text"},
+			{Name: "verbose", Short: "v", Description: "Enable verbose output", Default: "false"},
+			{Name: "max-tokens", Description: "Maximum tokens for analysis", Default: "4000"},
+		},
+		Action: handleAnalyzeCommand,
+	}
 }
 
-// createGenerateCommand creates the generate command
 func createGenerateCommand() *Command {
-    return & Command{
-        Name:        "generate",
-        Description: "Generate a business customization wrapper",
-        Usage:       "rapid-cli generate <project-name> <template-type> [flags]",
-        Flags: []Flag{
-            {Name: "output-dir", Short: "o", Description: "Output directory for generated files", Default: "./generated_wrappers", Required: false},
-            {Name: "template-type", Short: "t", Description: "Type of wrapper to generate", Default: "go-wrapper", Required: false},
-            {Name: "enterprise", Short: "e", Description: "Generate with enterprise pricing", Default: "false", Required: false},
-            {Name: "language", Short: "l", Description: "Target programming language", Default: "go", Required: false},
-        },
-        Action: func(ctx *CommandContext) error {
-            return handleGenerateCommand(ctx)
-        },
-    }
+	return &Command{
+		Name:        "generate",
+		Description: "Generate a business customization wrapper",
+		Usage:       "rapid-cli generate <project-name> <template-type> [flags]",
+		Flags: []Flag{
+			{Name: "output-dir", Short: "o", Description: "Output directory for generated files", Default: "./generated_wrappers"},
+			{Name: "template-type", Short: "t", Description: "Type of wrapper to generate", Default: "go-wrapper"},
+			{Name: "enterprise", Short: "e", Description: "Generate with enterprise pricing", Default: "false"},
+			{Name: "language", Short: "l", Description: "Target programming language", Default: "go"},
+		},
+		Action: handleGenerateCommand,
+	}
 }
 
-// createCompleteCommand creates the complete command
 func createCompleteCommand() *Command {
-    return & Command{
-        Name:        "complete",
-        Description: "Complete a multi-step workflow",
-        Usage:       "rapid-cli complete <workflow>",
-        Flags: []Flag{
-            {Name: "force", Short: "f", Description: "Force completion", Default: "false", Required: false},
-        },
-        Action: func(ctx *CommandContext) error {
-            return handleCompleteCommand(ctx)
-        },
-    }
+	return &Command{
+		Name:        "complete",
+		Description: "Complete a multi-step workflow",
+		Usage:       "rapid-cli complete <workflow>",
+		Flags: []Flag{
+			{Name: "force", Short: "f", Description: "Force completion", Default: "false"},
+		},
+		Action: handleCompleteCommand,
+	}
 }
 
-// createHelpCommand creates the help command
 func createHelpCommand() *Command {
-    return & Command{
-        Name:        "help",
-        Description: "Show help information",
-        Usage:       "rapid-cli help [command]",
-        Flags:       []Flag{},
-        Action: func(ctx *CommandContext) error {
-            return handleHelpCommand(ctx)
-        },
-    }
+	return &Command{
+		Name:        "help",
+		Description: "Show help information",
+		Usage:       "rapid-cli help [command]",
+		Action:      handleHelpCommand,
+	}
 }
 
-// createVersionCommand creates the version command
 func createVersionCommand() *Command {
-    return & Command{
-        Name:        "version",
-        Description: "Show version information",
-        Usage:       "rapid-cli version",
-        Flags:       []Flag{},
-        Action: func(ctx *CommandContext) error {
-            return handleVersionCommand(ctx)
-        },
-    }
+	return &Command{
+		Name:        "version",
+		Description: "Show version information",
+		Usage:       "rapid-cli version",
+		Action:      handleVersionCommand,
+	}
 }
 
-// handleAnalyzeCommand handles the analyze command
 func handleAnalyzeCommand(ctx *CommandContext) error {
-    // Get output format
-    outputFormat := ctx.Flags["output"]
-    if outputFormat == "" {
-        outputFormat = "text"
-    }
+	if ctx.App == nil {
+		return fmt.Errorf("rapid: no application configured")
+	}
+	path, err := requirePath(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := ctx.App.AnalyzeProject(path)
+	if err != nil {
+		return err
+	}
 
-    // Get path to analyze
-    if len(ctx.Args) < 1 {
-        return fmt.Errorf("path argument is required")
-    }
-    projectPath := ctx.Args[0]
-
-    // Get max tokens
-    maxTokensStr := ctx.Flags["max-tokens"]
-    maxTokens := 4000
-    if maxTokensStr != "" {
-        fmt.Sscanf(maxTokensStr, "%d", & maxTokens)
-    }
-
-    // Import and use the actual analyzer
-    analyzer, err := agent.NewProjectAnalyzer("ollama/plan-oss-64k:latest", maxTokens)
-    if err != nil {
-        return fmt.Errorf("failed to initialize analyzer: %w", err)
-    }
-
-    // Analyze project
-    result, err := analyzer.AnalyzeProject(projectPath)
-    if err != nil {
-        return fmt.Errorf("failed to analyze project: %w", err)
-    }
-
-    // Output based on format
-    switch outputFormat {
-    case "json":
-        jsonData, err := json.MarshalIndent(result, "", "  ")
-        if err != nil {
-            return fmt.Errorf("failed to marshal JSON: %w", err)
-        }
-        fmt.Fprint(ctx.Writer, string(jsonData))
-    case "text":
-        printTextAnalysis(ctx.Writer, result)
-    default:
-        return fmt.Errorf("unsupported output format: %s", outputFormat)
-    }
-
-    return nil
+	switch outputFormat(ctx) {
+	case "json":
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode analysis: %w", err)
+		}
+		fmt.Fprintln(ctx.Writer, string(data))
+	case "text":
+		printTextAnalysis(ctx.Writer, result)
+	default:
+		return fmt.Errorf("unsupported output format: %s", outputFormat(ctx))
+	}
+	return nil
 }
 
-// handleGenerateCommand handles the generate command
 func handleGenerateCommand(ctx *CommandContext) error {
-    // Get required arguments
-    if len(ctx.Args) < 2 {
-        return fmt.Errorf("project-name and template-type arguments are required")
-    }
-    projectName := ctx.Args[0]
-    templateType := ctx.Args 1]
+	if ctx.App == nil {
+		return fmt.Errorf("rapid: no application configured")
+	}
+	if len(ctx.Args) < 1 {
+		return fmt.Errorf("usage: rapid-cli generate <project-name> <template-type>")
+	}
+	projectName := ctx.Args[0]
+	templateType := ctx.Flags["template-type"]
+	if templateType == "" {
+		templateType = "go-wrapper"
+	}
+	if len(ctx.Args) > 1 {
+		templateType = ctx.Args[1]
+	}
+	outputDir := ctx.Flags["output-dir"]
+	if outputDir == "" {
+		outputDir = "./generated_wrappers"
+	}
+	enterprise := truthy(ctx.Flags["enterprise"])
 
-    // Get output directory
-    outputDir := ctx.Flags["output-dir"]
-    if outputDir == "" {
-        outputDir = "./generated_wrappers"
-    }
-
-    // Get template type
-    if templateType == "" {
-        templateType = ctx.Flags["template-type"]
-        if templateType == "" {
-            templateType = "go-wrapper"
-        }
-    }
-
-    // Get enterprise flag
-    enterprise := false
-    if enterpriseStr := ctx.Flags["enterprise"]; enterpriseStr != "" {
-        enterprise = strings.ToLower(enterpriseStr) == "true" || enterpriseStr == "1"
-    }
-
-    // Import and use the wrapper generator
-    pricingLogger := pricing.NewPriceLogger(100, "./pricing.log", "text")
-    generator := agent.NewWrapperGenerator("./templates", pricingLogger)
-
-    // Generate wrapper
-    wrapper, err := generator.GenerateWrapper(projectName, templateType, outputDir, enterprise)
-    if err != nil {
-        return fmt.Errorf("failed to generate wrapper: %w", err)\n    }
-
-    // Output success message
-    fmt.Fprintf(ctx.Writer, "Wrapper generated successfully:\n")
-    fmt.Fprintf(ctx.Writer, "  File: %s\n", wrapper.FilePath)
-    fmt.Fprintf(ctx.Writer, "  Project: %s\n", wrapper.ProjectName)
-    fmt.Fprintf(ctx.Writer, "  Template Type: %s\n", wrapper.TemplateType)
-    fmt.Fprintf(ctx.Writer, "  Generated At: %s\n", wrapper.Timestamp.Format(time.RFC3822))
-    fmt.Fprintf(ctx.Writer, "  Cost: $%.4f\n", wrapper.Pricing.Cost)
-
-    return nil
+	wrapper, err := ctx.App.GenerateNamedWrapper(projectName, templateType, outputDir, enterprise)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(ctx.Writer, "Wrapper generated successfully:\n")
+	fmt.Fprintf(ctx.Writer, "  File: %s\n", wrapper.FilePath)
+	fmt.Fprintf(ctx.Writer, "  Project: %s\n", wrapper.ProjectName)
+	fmt.Fprintf(ctx.Writer, "  Template Type: %s\n", wrapper.TemplateType)
+	fmt.Fprintf(ctx.Writer, "  Generated At: %s\n", wrapper.Timestamp.Format(time.RFC3339))
+	fmt.Fprintf(ctx.Writer, "  Cost: $%.4f\n", wrapper.Pricing.Cost)
+	return nil
 }
 
-// handleCompleteCommand handles the complete command
 func handleCompleteCommand(ctx *CommandContext) error {
-    if len(ctx.Args) < 1 {
-        return fmt.Errorf("workflow argument is required")
-    }
-
-    workflow := ctx.Args[0]
-
-    // Import and use the workflow manager
-    // For now, just print a message
-    fmt.Fprintf(ctx.Writer, "Completing workflow: %s\n", workflow)
-
-    return nil
+	if len(ctx.Args) < 1 {
+		return fmt.Errorf("usage: rapid-cli complete <workflow>")
+	}
+	fmt.Fprintf(ctx.Writer, "Completing workflow: %s\n", ctx.Args[0])
+	return nil
 }
 
-// handleHelpCommand handles the help command
 func handleHelpCommand(ctx *CommandContext) error {
-    if len(ctx.Args) < 1 {
-        printGeneralHelp(ctx.Writer)
-    } else {
-        command := ctx.Args[0]
-        printCommandHelp(ctx.Writer, command)
-    }
-
-    return nil
+	if len(ctx.Args) < 1 {
+		printGeneralHelp(ctx.Writer)
+		return nil
+	}
+	printCommandHelp(ctx.Writer, ctx.Args[0])
+	return nil
 }
 
-// handleVersionCommand handles the version command
 func handleVersionCommand(ctx *CommandContext) error {
-    config := "1.0.0"
-    fmt.Fprintf(ctx.Writer, "RAPID CLI v%s\n", config)
-    fmt.Fprintf(ctx.Writer, "Azzurro Technology AI Analysis and Wrapper Generation\n")
-    fmt.Fprintf(ctx.Writer, "\n")
-    fmt.Fprintf(ctx.Writer, "Built with Go
-")
-
-    return nil
+	fmt.Fprintf(ctx.Writer, "RAPID CLI v1.0.0\n")
+	fmt.Fprintf(ctx.Writer, "Azzurro Technology AI Analysis and Wrapper Generation\n\n")
+	fmt.Fprintf(ctx.Writer, "Built with Go\n")
+	return nil
 }
 
-// printTextAnalysis prints analysis results in text format
+func requirePath(ctx *CommandContext) (string, error) {
+	if len(ctx.Args) < 1 {
+		return "", fmt.Errorf("path argument is required")
+	}
+	abs, err := filepath.Abs(ctx.Args[0])
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("path %s: %w", abs, err)
+	}
+	return abs, nil
+}
+
+func outputFormat(ctx *CommandContext) string {
+	if f := ctx.Flags["output"]; f != "" {
+		return f
+	}
+	return "text"
+}
+
+func truthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// printTextAnalysis renders an analysis for a terminal.
 func printTextAnalysis(w io.Writer, result agent.AnalysisResult) {
-    tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "Project Analysis Results")
+	fmt.Fprintln(tw, "=======================")
+	fmt.Fprintln(tw)
+	fmt.Fprintf(tw, "Project:\t%s\n", result.ProjectName)
+	fmt.Fprintf(tw, "Path:\t%s\n", result.ProjectPath)
+	fmt.Fprintf(tw, "Files:\t%d\n", result.TotalFiles)
+	fmt.Fprintf(tw, "Size:\t%d bytes\n", result.TotalSize)
+	fmt.Fprintf(tw, "Complexity:\t%.2f\n", result.Complexity)
+	fmt.Fprintf(tw, "Has Tests:\t%v\n", result.HasTests)
+	fmt.Fprintf(tw, "Has CI:\t%v\n", result.HasCI)
+	fmt.Fprintln(tw)
 
-    fmt.Fprintf(tw, "Project Analysis Results:
-")
-    fmt.Fprintf(tw, "=======================\n\n")
-    fmt.Fprintf(tw,"Project: %s (%s)\n", result.Project.Name, result.Project.Lang)
-    fmt.Fprintf(tw,"Type: %s\n", result.Project.Type)
-    fmt.Fprintf(tw,"Size: %d bytes\n", result.Project.Size)
-    fmt.Fprintf(tw,"Complexity: %.2f\n", result.Project.Complexity)
-    fmt.Fprintf(tw,"Has Tests: %v\n", result.Project.HasTests)
-    fmt.Fprintf(tw,"Has CI: %v\n\n", result.Project.HasCI)
+	fmt.Fprintln(tw, "Recommendations:")
+	for i, rec := range result.Recommendations {
+		fmt.Fprintf(tw, "%d.\t[%s] %s - %s\n", i+1, rec.Priority, rec.Title, rec.Description)
+	}
+	fmt.Fprintln(tw)
 
-    fmt.Fprintf(tw, "Recommendations:\n")
-    for i, rec := range result.Recommendations {
-        fmt.Fprintf(tw, "%d. [%s] %s - %s\n", i+1, rec.Priority, rec.Title, rec.Description)
-    }
+	fmt.Fprintln(tw, "Integration Projects:")
+	for _, p := range result.IntegrationProjects {
+		fmt.Fprintf(tw, "  %s (%s): %.0f%%\n", p.Name, p.Platform, p.Compatibility*100)
+	}
+	fmt.Fprintln(tw)
 
-    fmt.Fprintf(tw, \n)
-    fmt.Fprintf(tw, "Integration Compatibility:\n")
-    for platform, compat := range result.IntegrationCompatibility {
-        fmt.Fprintf(tw, "  %s: POD=%v SHEPHERD=%v SONG=%v ATP=%v (%.0f%%)\n",
-            platform, compat.POD, compat.SHEPHERD, compat.SONG, compat.ATP, compat.Confidence*100)
-    }
+	fmt.Fprintf(tw, "Generated Code Files: %d\n", len(result.GeneratedCode))
+	for _, code := range result.GeneratedCode {
+		fmt.Fprintf(tw, "  - %s (%s)\n", code.File, code.Language)
+	}
+	fmt.Fprintln(tw)
 
-    fmt.Fprintf(tw, \n)
-    fmt.Fprintf(tw, "Generated Code Files: %d\n", len(result.GeneratedCode))
-    for _, code := range result.GeneratedCode {
-        fmt.Fprintf(tw, "  - %s (%s): %s\n", code.File, code.Language, code.GeneratedAt.Format(time.RFC822))
-    }
-
-    fmt.Fprintf(tw, \n)
-    fmt.Fprintf(tw, "Pricing Analysis:\n")
-    fmt.Fprintf(tw, "  Estimated Tokens: %d\n", result.Pricing.EstimatedTokens)
-    fmt.Fprintf(tw, "  Estimated Cost: $%.4f\n", result.Pricing.EstimatedCost)
-    fmt.Fprintf(tw, "  Cache Efficiency: %.0f%%\n", result.Pricing.CacheEfficiency*100)
-    fmt.Fprintf(tw, "  Currency: %s\n\n", result.Pricing.Currency)
-
-    tw.Flush()
+	fmt.Fprintln(tw, "Pricing Analysis:")
+	fmt.Fprintf(tw, "  Estimated Tokens:\t%d\n", result.Pricing.EstimatedTokens)
+	fmt.Fprintf(tw, "  Estimated Cost:\t$%.4f\n", result.Pricing.EstimatedCost)
+	fmt.Fprintf(tw, "  Cache Efficiency:\t%.0f%%\n", result.Pricing.CacheEfficiency*100)
+	fmt.Fprintf(tw, "  Currency:\t%s\n", result.Pricing.Currency)
+	_ = tw.Flush()
 }
 
-// printGeneralHelp prints general help information
 func printGeneralHelp(w io.Writer) {
-    fmt.Fprintf(w, "RAPID CLI - Azzurro Technology AI Analysis and Wrapper Generation\n")
-    fmt.Fprintf(w, "===================================================================\n\n")\n    fmt.Fprintf(w, "Usage:\n")
-    fmt.Fprintf(w, "  rapid-cli <command> [options]\n\n")
-
-    fmt.Fprintf(w, "Commands:\n")
-    fmt.Fprintf(w, "  analyze <path> [--output json|text] [--verbose] [--max-tokens n]\n")
-    fmt.Fprintf(w, "    Analyze a project directory for AI opportunities\n\n")
-
-    fmt.Fprintf(w, "  generate <project-name> <template-type> [--output-dir dir] [--enterprise] [--language lang]\n")
-    fmt.Fprintf(w, "    Generate a business customization wrapper\n\n")
-
-    fmt.Fprintf(w, "  complete <workflow> [--force]\n")
-    fmt.Fprintf(w, "    Complete a multi-step workflow\n\n")
-
-    fmt.Fprintf(w, "  help [command]\n")
-    fmt.Fprintf(w, "    Show help information\n\n")
-
-    fmt.Fprintf(w, "  version\n")
-    fmt.Fprintf(w, "    Show version information\n\n")
-
-    fmt.Fprintf(w, "For more information, visit: https://github.com/azzurrotech/rapid\n")
+	fmt.Fprintln(w, "RAPID CLI - Azzurro Technology AI Analysis and Wrapper Generation")
+	fmt.Fprintln(w, "===================================================================")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  rapid-cli <command> [options]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  analyze <path> [--output json|text] [--max-tokens n]")
+	fmt.Fprintln(w, "    Analyze a project directory for AI opportunities")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  generate <project-name> <template-type> [--output-dir dir] [--enterprise]")
+	fmt.Fprintln(w, "    Generate a business customization wrapper")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  complete <workflow> [--force]")
+	fmt.Fprintln(w, "    Complete a multi-step workflow")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  help [command]")
+	fmt.Fprintln(w, "    Show help information")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  version")
+	fmt.Fprintln(w, "    Show version information")
 }
 
-// printCommandHelp prints help information for a specific command
 func printCommandHelp(w io.Writer, command string) {
-    commands := []Command{
-        createAnalyzeCommand(),
-        createGenerateCommand(),
-        createCompleteCommand(),
-        createHelpCommand(),
-        createVersionCommand(),
-    }
-
-    for _, cmd := range commands {
-        if cmd.Name == command {
-            fmt.Fprintf(w, "%s - %s\n", cmd.Usage, cmd.Description)
-            fmt.Fprintf(w, "Flags:\n")
-            for _, flag := range cmd.Flags {
-                fmt.Fprintf(w, "  --%s%s: %s (default: %s)\n",
-                    flag.Name, flag.getShort(), flag.Description, flag.Default)
-            }
-            return
-        }
-    }
-
-    fmt.Fprintf(w, "Unknown command: %s\n", command)
+	for _, cmd := range []*Command{
+		createAnalyzeCommand(), createGenerateCommand(), createCompleteCommand(),
+		createHelpCommand(), createVersionCommand(),
+	} {
+		if cmd.Name != command {
+			continue
+		}
+		fmt.Fprintf(w, "%s - %s\n", cmd.Usage, cmd.Description)
+		fmt.Fprintln(w, "Flags:")
+		for _, flag := range cmd.Flags {
+			fmt.Fprintf(w, "  --%s%s: %s (default: %s)\n", flag.Name, flag.short(), flag.Description, flag.Default)
+		}
+		return
+	}
+	fmt.Fprintf(w, "Unknown command: %s\n", command)
 }
 
-// Helper function to get short flag
-func (f *Flag) getShort() string {
-    if f.Short != "" {
-        return fmt.Sprintf(" (-%s)", f.Short)
-    }
-    return ""
+func (f *Flag) short() string {
+	if f.Short != "" {
+		return fmt.Sprintf(" (-%s)", f.Short)
+	}
+	return ""
 }
