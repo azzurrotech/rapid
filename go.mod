@@ -9,10 +9,10 @@ require (
 	azzurrotech/song v0.0.0
 )
 
-replace azzurrotech/atp => ../stenella/atp
+replace azzurrotech/atp => ../atp
 
-replace azzurrotech/pod => ../stenella/atp/pod
+replace azzurrotech/pod => ../pod
 
-replace azzurrotech/shepherd => ../stenella/atp/shepherd
+replace azzurrotech/shepherd => ../shepherd
 
-replace azzurrotech/song => ../stenella/atp/song
+replace azzurrotech/song => ../song

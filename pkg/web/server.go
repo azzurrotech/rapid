@@ -31,7 +31,27 @@ func (s *WebServer) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	handlers.New(s.app).Register(mux)
 	mux.HandleFunc("/", s.handleRoot)
-	return s.app.Handler(mux), nil
+
+	// Wrap the mux with security headers.
+	finalMux := securityHeaders{mux}
+
+	return s.app.Handler(finalMux), nil
+}
+
+// securityHeaders adds HTTP security headers to every response.
+type securityHeaders struct {
+	handler http.Handler
+}
+
+func (s securityHeaders) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Set security headers
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
+	w.Header().Set("Content-Security-Policy", "default-src 'self' data:")
+	// Hide the server banner
+	w.Header().Set("Server", "RAPID/1.0.0")
+	s.handler.ServeHTTP(w, r)
 }
 
 // Start publishes the dashboard through song and serves the platform.

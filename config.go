@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,7 @@ type RAPIDConfig struct {
 	MaxTokens          int           `json:"max_tokens"`
 	SecretRotation     string        `json:"secret_rotation"`
 	IntegrationTimeout time.Duration `json:"integration_timeout"`
+	RotationInterval   Duration      `json:"-"` // set via SecretRotation or env
 
 	// DataDir is the atp root: it holds the pod store, song's hosted apps,
 	// the secrets vault and the platform state.
@@ -34,6 +36,20 @@ type RAPIDConfig struct {
 	OutputDir   string `json:"output_dir"`
 	// Enterprise selects enterprise pricing.
 	Enterprise bool `json:"enterprise"`
+}
+
+// Duration is a duration of time, wrapping time.Duration for config use.
+type Duration time.Duration
+
+// RotationPolicy defines when and how secrets should be rotated.
+type RotationPolicy struct {
+	// Interval is the maximum age of a secret before rotation.
+	// Empty means no automatic rotation.
+	Interval Duration `json:"interval"`
+	// MaxAge is the absolute maximum age of a secret.
+	MaxAge Duration `json:"max_age"`
+	// AllowWithoutSecret allows operation without a secret (for testing).
+	AllowWithoutSecret bool `json:"allow_without_secret"`
 }
 
 // DefaultConfig returns the configuration the CLI and server start from.
@@ -95,7 +111,33 @@ func (c *RAPIDConfig) Normalize() error {
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("rapid: port %d is out of range", c.Port)
 	}
+	// Parse the SecretRotation field: accept "hourly", "daily", or a Go
+	// duration string (e.g. "72h", "1h30m"). Empty or "never" disables rotation.
+	if c.SecretRotation != "" && c.SecretRotation != "never" {
+		if dur, ok := parseDurationEnv(c.SecretRotation); ok && dur > 0 {
+			c.RotationInterval = Duration(dur)
+		}
+	}
 	return nil
+}
+
+// parseDurationEnv parses a duration string environment variable. It returns
+// the duration and whether the parsing succeeded. Accepted formats include
+// "hourly", "daily", and Go duration strings like "72h", "1h30m".
+func parseDurationEnv(s string) (time.Duration, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "hourly":
+		return time.Hour, true
+	case "daily":
+		return 24 * time.Hour, true
+	case "never":
+		return 0, true
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, false
+	}
+	return d, true
 }
 
 // Addr is the host:port the web server listens on.

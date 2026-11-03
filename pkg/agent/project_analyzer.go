@@ -40,6 +40,37 @@ type AnalysisResult struct {
 	IntegrationProjects []IntegratedProject `json:"integration_projects"`
 	GeneratedCode       []GeneratedCode     `json:"generated_code"`
 	Pricing             PricingAnalysis     `json:"pricing"`
+	// TODOs tracked during analysis
+	TODOs []TodoItem `json:"todos,omitempty"`
+}
+
+// TodoItem represents a task todo tracked during project analysis.
+type TodoItem struct {
+	ID        string   `json:"id"`        // unique identifier
+	Text      string   `json:"text"`      // the todo description
+	Category  string   `json:"category"`  // e.g., "refactor", "feature", "bugfix"
+	Priority  string   `json:"priority"`  // "low", "medium", "high", "critical"
+	Status    string   `json:"status"`    // "pending", "in_progress", "completed", "deferred"
+	Created   time.Time `json:"created"`   // when the todo was created
+	Completed time.Time `json:"completed,omitempty"` // when it was completed, if applicable
+}
+
+// NewTodoItem creates a new TodoItem with default values.
+func NewTodoItem(text, category, priority string) TodoItem {
+	now := time.Now()
+	return TodoItem{
+		ID:       generateTodoID(),
+		Text:     text,
+		Category: category,
+		Priority: priority,
+		Status:   "pending",
+		Created:  now,
+	}
+}
+
+// generateTodoID generates a unique todo ID.
+func generateTodoID() string {
+	return "todo-" + strings.ReplaceAll(time.Now().Format("20060102150405"), "-", "") + "-" + string(rune('a'+time.Now().Second()%26))
 }
 
 // FileInfo describes one source file in the inventory.
