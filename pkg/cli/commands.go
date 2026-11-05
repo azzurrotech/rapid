@@ -243,14 +243,14 @@ func requirePath(ctx *CommandContext) (string, error) {
 	if len(ctx.Args) < 1 {
 		return "", fmt.Errorf("path argument is required")
 	}
-	abs, err := filepath.Abs(ctx.Args[0])
+	path, err := filepath.Abs(ctx.Args[0])
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
-	if _, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("path %s: %w", abs, err)
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("path %s: %w", path, err)
 	}
-	return abs, nil
+	return path, nil
 }
 
 func outputFormat(ctx *CommandContext) string {
