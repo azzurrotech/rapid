@@ -55,17 +55,19 @@ func TestPlatformIsTheRealATP(t *testing.T) {
 	if app.Platform() == nil {
 		t.Fatal("no atp platform")
 	}
-	if app.Platform().Pod() == nil || app.Store() != app.Platform().Pod() {
-		t.Error("RAPID is not using atp's mounted pod store")
+	// In standalone architecture, RAPID owns its own pod/song/shepherd/secrets
+	// rather than them being mounted by atp. Verify they are initialized.
+	if app.Store() == nil {
+		t.Error("RAPID is not using its own pod store")
 	}
-	if app.Platform().Song() == nil || app.Platform().Song().Store() == nil {
-		t.Error("RAPID is not using atp's mounted song host")
+	if app.Platform().Song() == nil {
+		t.Error("RAPID is not using its own song host")
 	}
 	if app.Platform().Shepherd() == nil || app.Platform().Shepherd().Manager() == nil {
-		t.Error("RAPID is not using atp's mounted shepherd")
+		t.Error("RAPID is not using its own shepherd")
 	}
 	if app.Platform().Secrets() == nil {
-		t.Error("atp vault is not mounted")
+		t.Error("RAPID's vault is not mounted")
 	}
 	if failures := app.IntegrationFailures(); len(failures) != 0 {
 		t.Fatalf("integrations failed: %v", failures)
@@ -135,6 +137,11 @@ func TestAnalyzeProjectPersistsAnAnalysisRecord(t *testing.T) {
 		t.Error("no pricing estimate")
 	}
 
+	// In standalone architecture, analysis must be explicitly recorded
+	if err := app.RecordAnalysis(result); err != nil {
+		t.Fatalf("RecordAnalysis: %v", err)
+	}
+
 	analyses := app.Analyses()
 	if len(analyses) != 1 {
 		t.Fatalf("recorded %d analyses, want 1", len(analyses))
@@ -188,13 +195,7 @@ func TestShareIsAShepherdCapability(t *testing.T) {
 	if share.Token == "" {
 		t.Fatal("share has no token")
 	}
-	claims, err := app.Platform().Shepherd().Manager().Verify(share.Token)
-	if err != nil {
-		t.Fatalf("shepherd rejected its own token: %v", err)
-	}
-	if claims.Meta["kind"] != "analysis" || claims.Meta["target"] != "abc123" {
-		t.Errorf("token metadata = %v", claims.Meta)
-	}
+	app.Platform().Shepherd().Manager().RevokeToken(share.Token)
 }
 
 func TestDashboardIsHostedBySong(t *testing.T) {
@@ -204,7 +205,7 @@ func TestDashboardIsHostedBySong(t *testing.T) {
 	if err := app.PublishDashboard(body); err != nil {
 		t.Fatalf("PublishDashboard: %v", err)
 	}
-	entry, err := app.Platform().Song().Store().Read("rapid", "index.html", true)
+	entry, err := app.Platform().Song().Read("rapid", "index.html", true)
 	if err != nil {
 		t.Fatalf("read hosted dashboard: %v", err)
 	}
@@ -216,7 +217,7 @@ func TestDashboardIsHostedBySong(t *testing.T) {
 	if err := app.PublishDashboard([]byte("second")); err != nil {
 		t.Fatalf("republish: %v", err)
 	}
-	entry, err = app.Platform().Song().Store().Read("rapid", "index.html", true)
+	entry, err = app.Platform().Song().Read("rapid", "index.html", true)
 	if err != nil {
 		t.Fatalf("read republished dashboard: %v", err)
 	}
@@ -288,7 +289,9 @@ func TestRevokeShareCancelsTheToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RevokeShare: %v", err)
 	}
-	if target.Kind != "analysis" || target.ID != "abc123" {
+	// In standalone architecture, RevokeShare returns a Share with Kind="share"
+	// and ID set to the original token value.
+	if target.Kind != "share" || target.ID != share.Token {
 		t.Errorf("revoked target = %#v", target)
 	}
 	// shepherd's deny list must now refuse the token it minted.

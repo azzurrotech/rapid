@@ -31,6 +31,7 @@ func (s *WebServer) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 	handlers.New(s.app).Register(mux)
 	mux.HandleFunc("/", s.handleRoot)
+	mux.HandleFunc("/rapid/", s.handleDashboard)
 
 	// Wrap the mux with security headers.
 	finalMux := securityHeaders{mux}
@@ -71,6 +72,16 @@ func (s *WebServer) Start() error {
 }
 
 // handleRoot sends the browser to the song-hosted dashboard rather than
+
+// handleDashboard serves the dashboard HTML at /rapid/
+func (s *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/rapid/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(dashboardHTML))
+		return
+	}
+	http.NotFound(w, r)
+}
 // duplicating the HTML at "/". One document, one place to edit it.
 func (s *WebServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {

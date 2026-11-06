@@ -98,6 +98,10 @@ func (a *API) Analyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := a.app.RecordAnalysis(result); err != nil {
+		writeError(w, http.StatusInternalServerError, "RecordAnalysis: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 

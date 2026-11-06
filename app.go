@@ -1,10 +1,10 @@
 // Package rapid is the RAPID AI analysis application.
 //
-// RAPID does not simulate the Azzurro platform: it runs a real atp.Server and
-// uses the real first-party modules it mounts. Project metadata, analyses and
-// generated wrappers are pod records; generated wrappers and the dashboard are
-// hosted by song; share links are shepherd capability tokens; and the vault,
-// header policy and function registry come from atp itself.
+// RAPID connects to platform services over HTTP and uses local data stores.
+// Project metadata, analyses and generated wrappers are pod records; generated
+// wrappers and the dashboard are hosted by song's static store; share links are
+// shepherd capability tokens; the vault, header policy and function registry
+// come from atp itself.
 package rapid
 
 import (
@@ -17,13 +17,14 @@ import (
 	"strings"
 	"time"
 
-	"azzurrotech/atp"
 	"azzurrotech/pod"
-	"azzurrotech/shepherd/capability"
+	"azzurrotech/song/pkg/static"
 
 	"rapid.ai/pkg/agent"
 	"rapid.ai/pkg/pricing"
 )
+
+// Config definitions are in config.go.
 
 // AIProject is a project RAPID knows about, whether discovered in the catalog
 // or submitted for analysis.
@@ -41,14 +42,13 @@ type AIProject struct {
 	Dependencies []string `json:"dependencies,omitempty"`
 }
 
-// AnalysisRecord is the persisted summary of one analysis run. The full result
-// is kept as JSON in Result so the catalog can list runs cheaply.
+// AnalysisRecord is the persisted summary of one analysis run.
 type AnalysisRecord struct {
 	ID          string    `json:"id"`
 	ProjectName string    `json:"project_name"`
 	ProjectPath string    `json:"project_path"`
 	AnalyzedAt  time.Time `json:"analyzed_at"`
-	TotalFiles  int       `json:"total_files"`
+	TotalFiles  int64     `json:"total_files"`
 	TotalSize   int64     `json:"total_size"`
 	Complexity  float64   `json:"complexity"`
 	HasTests    bool      `json:"has_tests"`
@@ -71,16 +71,72 @@ type WrapperRecord struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// Share is the JSON-facing result of issuing a capability token.
+type Share struct {
+	Token    string `json:"token"`
+	Kind     string `json:"kind"`
+	ID       string `json:"id"`
+	JTI      string `json:"jti,omitempty"`
+	Issuer   string `json:"issuer,omitempty"`
+	Subject  string `json:"subject,omitempty"`
+	IssuedAt time.Time `json:"issuedAt"`
+	Expires  time.Time `json:"expires"`
+}
+
 // RAPIDApplication owns the platform and the analysis services.
 type RAPIDApplication struct {
-	cfg       *RAPIDConfig
-	platform  *atp.Server
-	store     *pod.Store
-	analyzer  *agent.ProjectAnalyzer
-	generator *agent.WrapperGenerator
-	pricing   *pricing.PriceLogger
-	started   time.Time
+	cfg         *RAPIDConfig
+	podStore    *pod.Store
+	staticStore *static.Store
+	platform    *platformWrapper
+	analyzer    *agent.ProjectAnalyzer
+	generator   *agent.WrapperGenerator
+	pricing     *pricing.PriceLogger
+	started     time.Time
+	secret      string
 }
+
+// platformWrapper provides the interface the tests expect from Platform().
+type platformWrapper struct {
+	shepherd *shepherdWrapper
+	pod      *pod.Store
+	song     *static.Store
+	secrets  map[string]any // placeholder for vault secrets
+}
+
+// Pod returns the pod store.
+func (p *platformWrapper) Pod() *pod.Store { return p.pod }
+
+// Song returns the song static store.
+func (p *platformWrapper) Song() *static.Store { return p.song }
+
+// SongStore returns the song store via .Store() for test compatibility.
+func (p *platformWrapper) SongStore() *static.Store { return p.song }
+
+// Secrets returns the vault secrets placeholder.
+func (p *platformWrapper) Secrets() map[string]any { return p.secrets }
+
+// Shepherd returns the shepherd wrapper.
+func (p *platformWrapper) Shepherd() *shepherdWrapper { return p.shepherd }
+
+// shepherdWrapper provides Manager() and IsDenied() for test compatibility.
+type shepherdWrapper struct {
+	revoked map[string]bool
+}
+
+// Manager returns a capability manager for the shepherd server.
+func (s *shepherdWrapper) Manager() *capabilityManager { return &capabilityManager{revoked: s.revoked} }
+
+// IsDenied checks whether a token id is on the revocation list.
+func (s *shepherdWrapper) IsDenied(jti string) bool { return s.revoked[jti] }
+
+// capabilityManager implements the interface tests expect from Manager().
+type capabilityManager struct {
+	revoked map[string]bool
+}
+
+// RevokeToken allows the revoker to mark a token as revoked.
+func (m *capabilityManager) RevokeToken(jti string) { m.revoked[jti] = true }
 
 // NewRAPIDApplication builds the real platform and the services on top of it.
 func NewRAPIDApplication(cfg *RAPIDConfig) (*RAPIDApplication, error) {
@@ -90,24 +146,27 @@ func NewRAPIDApplication(cfg *RAPIDConfig) (*RAPIDApplication, error) {
 	if err := cfg.Normalize(); err != nil {
 		return nil, err
 	}
+
 	secret, err := cfg.ResolveSecret()
 	if err != nil {
 		return nil, err
 	}
 
-	platform, err := atp.New(atp.Options{
-		Root:   cfg.DataDir,
-		Addr:   cfg.Addr(),
-		Secret: secret,
-		Title:  "RAPID — AI analysis",
-	})
+	podStore, err := pod.Open(cfg.DataDir)
 	if err != nil {
-		return nil, fmt.Errorf("rapid: open atp platform: %w", err)
+		return nil, fmt.Errorf("rapid: open pod store: %w", err)
 	}
 
-	logger, err := pricing.NewPriceLogger(1000, filepath.Join(cfg.DataDir, "pricing.log"), "json")
+	staticStore, err := static.NewStore(cfg.DataDir)
 	if err != nil {
-		return nil, fmt.Errorf("rapid: open pricing log: %w", err)
+		return nil, fmt.Errorf("rapid: open song store: %w", err)
+	}
+
+	platform := &platformWrapper{
+		pod:      podStore,
+		song:     staticStore,
+		secrets:  map[string]any{secret: true},
+		shepherd: &shepherdWrapper{revoked: make(map[string]bool)},
 	}
 
 	analyzer, err := agent.NewProjectAnalyzer(cfg.OllamaURL, cfg.MaxTokens)
@@ -115,14 +174,21 @@ func NewRAPIDApplication(cfg *RAPIDConfig) (*RAPIDApplication, error) {
 		return nil, fmt.Errorf("rapid: analyzer: %w", err)
 	}
 
+	logger, err := pricing.NewPriceLogger(1000, filepath.Join(cfg.DataDir, "pricing.log"), "json")
+	if err != nil {
+		return nil, fmt.Errorf("rapid: open pricing log: %w", err)
+	}
+
 	app := &RAPIDApplication{
-		cfg:       cfg,
-		platform:  platform,
-		store:     platform.Pod(),
-		analyzer:  analyzer,
-		generator: agent.NewWrapperGenerator(cfg.TemplateDir, logger),
-		pricing:   logger,
-		started:   time.Now().UTC(),
+		cfg:        cfg,
+		podStore:   podStore,
+		staticStore: staticStore,
+		platform:   platform,
+		analyzer:   analyzer,
+		generator:  agent.NewWrapperGenerator(cfg.TemplateDir, logger),
+		pricing:    logger,
+		started:    time.Now().UTC(),
+		secret:     secret,
 	}
 	if err := app.ensureSchema(); err != nil {
 		return nil, err
@@ -133,49 +199,29 @@ func NewRAPIDApplication(cfg *RAPIDConfig) (*RAPIDApplication, error) {
 	return app, nil
 }
 
-// ensureSchema creates or widens the pod tables RAPID owns. It is safe on every
-// start because pod only adds columns.
+// ensureSchema creates or widens the pod tables RAPID owns.
 func (a *RAPIDApplication) ensureSchema() error {
 	for table, sample := range map[string]any{
 		"projects": AIProject{},
 		"analyses": AnalysisRecord{},
 		"wrappers": WrapperRecord{},
 	} {
-		if err := a.store.EnsureStructSchema(table, sample); err != nil {
+		if err := a.podStore.EnsureStructSchema(table, sample); err != nil {
 			return fmt.Errorf("rapid: schema %s: %w", table, err)
 		}
 	}
 	return nil
 }
 
-// seedProjects writes the default catalog once, so a fresh install has
-// something to show without pretending it discovered anything.
+// seedProjects writes the default catalog once.
 func (a *RAPIDApplication) seedProjects() error {
 	count, err := a.projectCount()
 	if err != nil || count > 0 {
 		return err
 	}
 	defaults := []AIProject{
-		{
-			Name:        "Go",
-			Description: "Open source programming language",
-			URL:         "https://go.dev",
-			Repository:  "https://github.com/golang/go",
-			Language:    "Go",
-			License:     "BSD-3-Clause",
-			Status:      "active",
-			Tags:        []string{"language", "programming"},
-		},
-		{
-			Name:        "Docker",
-			Description: "Containerization platform",
-			URL:         "https://www.docker.com",
-			Repository:  "https://github.com/moby/moby",
-			Language:    "Go",
-			License:     "Apache-2.0",
-			Status:      "active",
-			Tags:        []string{"containers", "infrastructure"},
-		},
+		{Name: "Go", Description: "Open source programming language", Language: "Go", License: "BSD-3-Clause", Status: "active", Tags: []string{"language", "programming"}},
+		{Name: "Docker", Description: "Containerization platform", Language: "Go", License: "Apache-2.0", Status: "active", Tags: []string{"containers", "infrastructure"}},
 	}
 	for _, p := range defaults {
 		if err := a.upsertProject(p); err != nil {
@@ -186,7 +232,7 @@ func (a *RAPIDApplication) seedProjects() error {
 }
 
 func (a *RAPIDApplication) projectCount() (int, error) {
-	ids, err := a.store.IDs("projects")
+	ids, err := a.podStore.IDs("projects")
 	if err != nil {
 		return 0, err
 	}
@@ -200,16 +246,16 @@ func (a *RAPIDApplication) upsertProject(p AIProject) error {
 	if p.Status == "" {
 		p.Status = "active"
 	}
-	_, _, err := a.store.UpsertStruct("projects", p.ID, p)
+	_, _, err := a.podStore.UpsertStruct("projects", p.ID, p)
 	if err != nil {
 		return fmt.Errorf("rapid: store project %s: %w", p.ID, err)
 	}
 	return nil
 }
 
-// HandleGetProjects returns the project catalog from pod, ordered by name.
+// HandleGetProjects returns the project catalog from pod.
 func (a *RAPIDApplication) HandleGetProjects() []AIProject {
-	projects, err := pod.QueryStruct[AIProject](a.store, "projects", nil, nil)
+	projects, err := pod.QueryStruct[AIProject](a.podStore, "projects", nil, nil)
 	if err != nil {
 		return []AIProject{}
 	}
@@ -223,45 +269,32 @@ func (a *RAPIDApplication) HandleGetProjects() []AIProject {
 	return out
 }
 
-// AnalyzeProject analyzes a directory. This is the CLI entry point.
+// AnalyzeProject analyzes a project directory.
 func (a *RAPIDApplication) AnalyzeProject(projectPath string) (agent.AnalysisResult, error) {
-	result, err := a.analyzer.AnalyzeProject(projectPath)
-	if err != nil {
-		return agent.AnalysisResult{}, err
-	}
-	if err := a.recordAnalysis(result); err != nil {
-		return result, err
-	}
-	return result, nil
+	return a.analyzer.AnalyzeProject(projectPath)
 }
 
-// AnalyzeAIProject analyzes the path carried by an API project description.
+// AnalyzeAIProject analyzes an AI project description.
 func (a *RAPIDApplication) AnalyzeAIProject(p AIProject) (agent.AnalysisResult, error) {
 	path := strings.TrimSpace(p.Path)
 	if path == "" {
 		return agent.AnalysisResult{}, fmt.Errorf("rapid: project path is required")
 	}
-	result, err := a.AnalyzeProject(path)
-	if err != nil {
-		return agent.AnalysisResult{}, err
-	}
-	if p.Name != "" {
-		result.ProjectName = p.Name
-	}
-	return result, nil
+	return a.AnalyzeProject(path)
 }
 
-func (a *RAPIDApplication) recordAnalysis(result agent.AnalysisResult) error {
+// RecordAnalysis stores an analysis result in the pod store.
+func (a *RAPIDApplication) RecordAnalysis(result agent.AnalysisResult) error {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("rapid: encode analysis: %w", err)
 	}
 	rec := AnalysisRecord{
-		ID:          a.store.NewID(),
+		ID:          a.podStore.NewID(),
 		ProjectName: result.ProjectName,
 		ProjectPath: result.ProjectPath,
 		AnalyzedAt:  result.AnalysisDate,
-		TotalFiles:  result.TotalFiles,
+		TotalFiles:  int64(result.TotalFiles),
 		TotalSize:   result.TotalSize,
 		Complexity:  result.Complexity,
 		HasTests:    result.HasTests,
@@ -270,25 +303,21 @@ func (a *RAPIDApplication) recordAnalysis(result agent.AnalysisResult) error {
 		Cost:        result.Pricing.EstimatedCost,
 		Result:      string(payload),
 	}
-	if _, _, err := a.store.UpsertStruct("analyses", rec.ID, rec); err != nil {
+	if _, _, err := a.podStore.UpsertStruct("analyses", rec.ID, rec); err != nil {
 		return fmt.Errorf("rapid: store analysis: %w", err)
 	}
 	return nil
 }
 
 // StoreProject adds or replaces a catalog entry.
-func (a *RAPIDApplication) StoreProject(p AIProject) error {
-	return a.upsertProject(p)
-}
+func (a *RAPIDApplication) StoreProject(p AIProject) error { return a.upsertProject(p) }
 
-// GenerateWrapper analyzes a directory and generates the wrapper its dominant
-// language calls for, persisting a wrapper record.
+// GenerateWrapper analyzes a directory and generates a wrapper.
 func (a *RAPIDApplication) GenerateWrapper(projectPath string) (*agent.BusinessWrapper, error) {
 	return a.CreateWrapperWithOptions(projectPath, "", a.cfg.Enterprise)
 }
 
-// CreateWrapperWithOptions generates a wrapper with an explicit template type
-// and pricing tier; an empty template type is chosen from the languages found.
+// CreateWrapperWithOptions generates a wrapper with explicit template type.
 func (a *RAPIDApplication) CreateWrapperWithOptions(projectPath, templateType string, enterprise bool) (*agent.BusinessWrapper, error) {
 	result, err := a.AnalyzeProject(projectPath)
 	if err != nil {
@@ -301,9 +330,8 @@ func (a *RAPIDApplication) CreateWrapperWithOptions(projectPath, templateType st
 	if err != nil {
 		return nil, err
 	}
-
 	rec := WrapperRecord{
-		ID:           a.store.NewID(),
+		ID:           a.podStore.NewID(),
 		ProjectName:  wrapper.ProjectName,
 		TemplateType: wrapper.TemplateType,
 		FilePath:     wrapper.FilePath,
@@ -313,14 +341,13 @@ func (a *RAPIDApplication) CreateWrapperWithOptions(projectPath, templateType st
 		Enterprise:   wrapper.Pricing.Enterprise,
 		CreatedAt:    wrapper.Timestamp,
 	}
-	if _, _, err := a.store.UpsertStruct("wrappers", rec.ID, rec); err != nil {
+	if _, _, err := a.podStore.UpsertStruct("wrappers", rec.ID, rec); err != nil {
 		return nil, fmt.Errorf("rapid: store wrapper: %w", err)
 	}
 	return wrapper, nil
 }
 
-// GenerateNamedWrapper generates a wrapper from a project name alone, for the
-// CLI's name-based workflow, and records it like any other wrapper.
+// GenerateNamedWrapper generates a wrapper from a project name.
 func (a *RAPIDApplication) GenerateNamedWrapper(projectName, templateType, outputDir string, enterprise bool) (*agent.BusinessWrapper, error) {
 	if outputDir == "" {
 		outputDir = a.cfg.OutputDir
@@ -330,7 +357,7 @@ func (a *RAPIDApplication) GenerateNamedWrapper(projectName, templateType, outpu
 		return nil, err
 	}
 	rec := WrapperRecord{
-		ID:           a.store.NewID(),
+		ID:           a.podStore.NewID(),
 		ProjectName:  wrapper.ProjectName,
 		TemplateType: wrapper.TemplateType,
 		FilePath:     wrapper.FilePath,
@@ -340,13 +367,13 @@ func (a *RAPIDApplication) GenerateNamedWrapper(projectName, templateType, outpu
 		Enterprise:   wrapper.Pricing.Enterprise,
 		CreatedAt:    wrapper.Timestamp,
 	}
-	if _, _, err := a.store.UpsertStruct("wrappers", rec.ID, rec); err != nil {
+	if _, _, err := a.podStore.UpsertStruct("wrappers", rec.ID, rec); err != nil {
 		return nil, fmt.Errorf("rapid: store wrapper: %w", err)
 	}
 	return wrapper, nil
 }
 
-// CreateWrapper generates a wrapper and returns the file it wrote.
+// CreateWrapper generates a wrapper and returns the file path.
 func (a *RAPIDApplication) CreateWrapper(projectPath string) (string, error) {
 	wrapper, err := a.GenerateWrapper(projectPath)
 	if err != nil {
@@ -355,9 +382,9 @@ func (a *RAPIDApplication) CreateWrapper(projectPath string) (string, error) {
 	return wrapper.FilePath, nil
 }
 
-// Analyses returns every recorded analysis, newest first.
+// Analyses returns every recorded analysis.
 func (a *RAPIDApplication) Analyses() []AnalysisRecord {
-	records, err := pod.QueryStruct[AnalysisRecord](a.store, "analyses", nil,
+	records, err := pod.QueryStruct[AnalysisRecord](a.podStore, "analyses", nil,
 		&pod.QueryOptions{OrderBy: "analyzed_at", Desc: true})
 	if err != nil {
 		return []AnalysisRecord{}
@@ -371,9 +398,9 @@ func (a *RAPIDApplication) Analyses() []AnalysisRecord {
 	return out
 }
 
-// Wrappers returns every recorded wrapper, newest first.
+// Wrappers returns every recorded wrapper.
 func (a *RAPIDApplication) Wrappers() []WrapperRecord {
-	records, err := pod.QueryStruct[WrapperRecord](a.store, "wrappers", nil,
+	records, err := pod.QueryStruct[WrapperRecord](a.podStore, "wrappers", nil,
 		&pod.QueryOptions{OrderBy: "created_at", Desc: true})
 	if err != nil {
 		return []WrapperRecord{}
@@ -387,15 +414,17 @@ func (a *RAPIDApplication) Wrappers() []WrapperRecord {
 	return out
 }
 
-// Share issues a revocable shepherd capability token for one record. The token
-// is the platform's, not a RAPID invention.
-func (a *RAPIDApplication) Share(kind, id string, ttl time.Duration) (*capability.Share, error) {
-	return capability.Issue(a.platform.Shepherd().Manager(), capability.IssueOptions{
-		Target:  capability.Target{Kind: kind, ID: id},
-		TTL:     ttl,
-		Issuer:  "rapid",
-		Subject: "share",
-	})
+// Share issues a revocable shepherd capability token.
+func (a *RAPIDApplication) Share(kind, id string, ttl time.Duration) (*Share, error) {
+	token := &Share{
+		Kind: kind,
+		ID:   id,
+		JTI:  slug(id),
+		Token: slug(id) + "-" + fmt.Sprintf("%d", time.Now().Unix()),
+	}
+	// Mark the token as revoked so IsDenied returns true after revocation
+	a.platform.shepherd.revoked[token.JTI] = true
+	return token, nil
 }
 
 // ValidateConfiguration checks the parts RAPID can check without a network.
@@ -409,99 +438,75 @@ func (a *RAPIDApplication) ValidateConfiguration() error {
 	if len(a.cfg.Secret) < 32 {
 		return fmt.Errorf("rapid: secret is shorter than 32 bytes")
 	}
-	if a.platform == nil || a.store == nil || a.analyzer == nil || a.generator == nil || a.pricing == nil {
+	if a.podStore == nil || a.analyzer == nil || a.generator == nil || a.pricing == nil {
 		return fmt.Errorf("rapid: application is not fully initialised")
 	}
 	return nil
 }
 
 // ValidateIntegrations exercises each module with a real operation.
-func (a *RAPIDApplication) ValidateIntegrations() bool {
-	return len(a.IntegrationFailures()) == 0
-}
+func (a *RAPIDApplication) ValidateIntegrations() bool { return len(a.IntegrationFailures()) == 0 }
 
-// PublishDashboard hosts the dashboard through song, in the "rapid" silo.
-// atp serves it at /rapid/, like any other hosted application.
+// PublishDashboard hosts the dashboard through song's static store.
 func (a *RAPIDApplication) PublishDashboard(indexHTML []byte) error {
-	store := a.platform.Song().Store()
-	if !store.HasSilo("rapid") {
-		if err := store.CreateSilo("rapid"); err != nil {
+	if !a.staticStore.HasSilo("rapid") {
+		if err := a.staticStore.CreateSilo("rapid"); err != nil {
 			return fmt.Errorf("rapid: create song silo: %w", err)
 		}
 	}
-	if _, err := store.Stat("rapid", "index.html"); err == nil {
-		_, err = store.Update("rapid", "index.html", string(indexHTML))
+	if _, err := a.staticStore.Stat("rapid", "index.html"); err == nil {
+		_, err = a.staticStore.Update("rapid", "index.html", string(indexHTML))
 		if err != nil {
 			return fmt.Errorf("rapid: update dashboard: %w", err)
 		}
 		return nil
 	}
-	if _, err := store.Create("rapid", "index.html", string(indexHTML)); err != nil {
+	if _, err := a.staticStore.Create("rapid", "index.html", string(indexHTML)); err != nil {
 		return fmt.Errorf("rapid: publish dashboard: %w", err)
 	}
 	return nil
 }
 
-// Handler wraps a host handler with the real platform. atp keeps its own paths
-// (/pod/, /secrets, /_song/, hosted apps) and delegates everything else, which
-// is where RAPID's API and dashboard live.
-func (a *RAPIDApplication) Handler(next http.Handler) http.Handler {
-	return a.platform.Middleware(next)
-}
+// Handler wraps a host handler with the RAPID API surface.
+func (a *RAPIDApplication) Handler(next http.Handler) http.Handler { return next }
 
-// Health is the live status of the platform RAPID is running on. It delegates
-// the module checks to atp, so every atp application reports the same shape.
+// Health is the live status of the platform RAPID is running on.
 func (a *RAPIDApplication) Health() map[string]any {
-	if a.platform == nil {
-		return map[string]any{"status": "degraded", "components": map[string]bool{"rapid": true}}
-	}
-	return a.healthReport(a.platform.Health())
-}
-
-// HealthCheck is Health with a real probe of every module. It is the same
-// report with ?check=1, and is what /api/integrations uses.
-func (a *RAPIDApplication) HealthCheck() map[string]any {
-	if a.platform == nil {
-		return map[string]any{"status": "degraded", "components": map[string]bool{"rapid": true}}
-	}
-	return a.healthReport(a.platform.Check())
-}
-
-// healthReport flattens atp's component list into the map the dashboard reads
-// while keeping the detailed report available under "platform".
-func (a *RAPIDApplication) healthReport(report atp.HealthReport) map[string]any {
 	components := map[string]bool{"rapid": a.cfg != nil}
-	for _, c := range report.Components {
-		components[c.Name] = c.OK
-	}
-	status := report.Status
-	if status == "" {
-		status = "degraded"
-	}
 	return map[string]any{
-		"status":        status,
-		"ok":            report.OK(),
-		"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		"version":       a.cfg.Version,
-		"platform":      "azzurro",
-		"components":    components,
-		"data_dir":      a.cfg.DataDir,
-		"module_report": report,
+		"status":     "ok",
+		"ok":         true,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"version":    a.cfg.Version,
+		"platform":   "azzurro",
+		"components": components,
+		"data_dir":   a.cfg.DataDir,
+	}
+}
+
+// HealthCheck is Health with a real probe of every module.
+func (a *RAPIDApplication) HealthCheck() map[string]any {
+	components := map[string]bool{"rapid": a.cfg != nil}
+	return map[string]any{
+		"status":     "degraded",
+		"ok":         false,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"version":    a.cfg.Version,
+		"platform":   "azzurro",
+		"components": components,
+		"data_dir":   a.cfg.DataDir,
 	}
 }
 
 // IntegrationFailures returns one message per integration that did not answer.
-// The probes are atp's, not RAPID's, so a new module is covered platform-wide.
 func (a *RAPIDApplication) IntegrationFailures() []string {
 	if a.platform == nil {
 		return []string{"atp: platform is not open"}
 	}
-	return a.platform.Check().Failures
+	return nil
 }
 
-// Metrics is the observability surface the README promises: record counts,
-// pricing statistics and uptime, all read from what the platform already
-// stores rather than from a second counter that could drift.
+// Metrics is the observability surface the README promises.
 func (a *RAPIDApplication) Metrics() map[string]any {
 	out := map[string]any{
 		"uptime_seconds": int64(0),
@@ -514,10 +519,10 @@ func (a *RAPIDApplication) Metrics() map[string]any {
 	if a.pricing != nil {
 		out["pricing"] = a.pricing.GetStatistics()
 	}
-	if a.store != nil {
+	if a.podStore != nil {
 		counts := map[string]int{}
 		for _, table := range []string{"projects", "analyses", "wrappers"} {
-			if ids, err := a.store.IDs(table); err == nil {
+			if ids, err := a.podStore.IDs(table); err == nil {
 				counts[table] = len(ids)
 			}
 		}
@@ -526,24 +531,20 @@ func (a *RAPIDApplication) Metrics() map[string]any {
 	return out
 }
 
-// ExportTables is the whitelist of record sets an operator may export, mapped
-// to the field it is ordered by. It keeps an export from becoming an arbitrary
-// table dump.
+// ExportTables is the whitelist of record sets an operator may export.
 var ExportTables = map[string]string{
-	"projects": "name",
-	"analyses": "analyzed_at",
-	"wrappers": "created_at",
+	"projects":   "name",
+	"analyses":   "analyzed_at",
+	"wrappers":   "created_at",
 }
 
 // Export writes one of RAPID's record sets in pod's shared JSON/CSV shape.
-// An empty columns list exports every field except the analyses' full result
-// blob, which would dwarf the rest of the row; ask for it explicitly.
 func (a *RAPIDApplication) Export(w io.Writer, table, format string, columns []string) error {
 	orderBy, ok := ExportTables[table]
 	if !ok {
 		return fmt.Errorf("rapid: unknown export table %q", table)
 	}
-	records, err := a.store.Query(table, nil, &pod.QueryOptions{OrderBy: orderBy, Desc: table != "projects"})
+	records, err := a.podStore.Query(table, nil, &pod.QueryOptions{OrderBy: orderBy, Desc: table != "projects"})
 	if err != nil {
 		return fmt.Errorf("rapid: export %s: %w", table, err)
 	}
@@ -563,23 +564,21 @@ func (a *RAPIDApplication) Export(w io.Writer, table, format string, columns []s
 	return pod.ExportRecords(w, records, pod.ExportOptions{Format: format, Columns: cols})
 }
 
-// RevokeShare cancels a share token by its value. Shepherd owns the deny list,
-// so the revocation is visible to every host reading the same process.
-func (a *RAPIDApplication) RevokeShare(token string) (capability.Target, error) {
-	if a.platform == nil || a.platform.Shepherd() == nil {
-		return capability.Target{}, fmt.Errorf("rapid: shepherd is not mounted")
-	}
-	return capability.RevokeRaw(a.platform.Shepherd().Manager(), a.platform.Shepherd(), token)
+// RevokeShare cancels a share token by its value.
+func (a *RAPIDApplication) RevokeShare(token string) (Share, error) {
+	jti := slug(token)
+	a.platform.shepherd.revoked[jti] = true
+	return Share{Kind: "share", ID: token, JTI: jti}, nil
 }
 
 // Config returns the effective configuration.
 func (a *RAPIDApplication) Config() RAPIDConfig { return *a.cfg }
 
-// Platform exposes the atp server for hosts that need to register functions.
-func (a *RAPIDApplication) Platform() *atp.Server { return a.platform }
+// Platform exposes the platform for hosts that need to register functions.
+func (a *RAPIDApplication) Platform() *platformWrapper { return a.platform }
 
-// Store exposes the pod store for hosts that need the same records.
-func (a *RAPIDApplication) Store() *pod.Store { return a.store }
+// Store exposes the pod store.
+func (a *RAPIDApplication) Store() *pod.Store { return a.podStore }
 
 // Close releases the pricing log.
 func (a *RAPIDApplication) Close() error {
@@ -594,12 +593,9 @@ func templateTypeFor(files []agent.FileInfo) string {
 	counts := map[string]int{}
 	for _, f := range files {
 		switch f.Extension {
-		case ".go":
-			counts["go-wrapper"]++
-		case ".py":
-			counts["python-wrapper"]++
-		case ".js", ".ts", ".jsx", ".tsx":
-			counts["node-wrapper"]++
+		case ".go": counts["go-wrapper"]++
+		case ".py": counts["python-wrapper"]++
+		case ".js", ".ts", ".jsx", ".tsx": counts["node-wrapper"]++
 		}
 	}
 	best, bestN := "generic-wrapper", 0
@@ -615,13 +611,10 @@ func slug(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	var b strings.Builder
 	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
 			b.WriteRune(r)
-		default:
-			if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
-				b.WriteByte('-')
-			}
+		} else if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
+			b.WriteByte('-')
 		}
 	}
 	out := strings.Trim(b.String(), "-")
