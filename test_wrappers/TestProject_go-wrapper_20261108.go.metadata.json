@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "author": "RAPID AI",
+  "description": "Auto-generated Go wrapper for TestProject via the RAPID analysis system.",
+  "license": "MIT",
+  "dependencies": [
+    "azzurrotech/atp",
+    "azzurrotech/pod",
+    "azzurrotech/shepherd"
+  ],
+  "integration_points": [
+    "POD record storage",
+    "SHEPHERD capability tokens",
+    "SONG static hosting",
+    "ATP function registration",
+    "Go module integration",
+    "Container image support"
+  ]
+}
