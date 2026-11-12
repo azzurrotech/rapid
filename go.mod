@@ -3,7 +3,6 @@ module rapid.ai
 go 1.22.0
 
 require (
-	azzurrotech/atp v0.0.0
 	azzurrotech/pod v0.0.0
 	azzurrotech/shepherd v0.0.0
 	azzurrotech/song v0.0.0

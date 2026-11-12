@@ -225,11 +225,11 @@ func WithOllamaRaw() RunOllamaOption {
 
 // OllamaResponse represents a response from an Ollama model.
 type OllamaResponse struct {
-	Model        string `json:"model"`
-	Response     string `json:"response"`
-	Done         bool   `json:"done"`
-	DoneReason   string `json:"done_reason,omitempty"`
-	Context      string `json:"context,omitempty"`
+	Model         string `json:"model"`
+	Response      string `json:"response"`
+	Done          bool   `json:"done"`
+	DoneReason    string `json:"done_reason,omitempty"`
+	Context       string `json:"context,omitempty"`
 	TotalDuration int64  `json:"total_duration,omitempty"`
 }
 

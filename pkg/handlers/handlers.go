@@ -29,6 +29,7 @@ func New(app *rapid.RAPIDApplication) *API { return &API{app: app} }
 // Register mounts every RAPID endpoint on mux.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", a.Health)
+	mux.HandleFunc("/health", a.Health)
 	mux.HandleFunc("/api/projects", a.Projects)
 	mux.HandleFunc("/api/projects/analyze", a.Analyze)
 	mux.HandleFunc("/api/wrappers", a.Wrappers)

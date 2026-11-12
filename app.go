@@ -73,12 +73,12 @@ type WrapperRecord struct {
 
 // Share is the JSON-facing result of issuing a capability token.
 type Share struct {
-	Token    string `json:"token"`
-	Kind     string `json:"kind"`
-	ID       string `json:"id"`
-	JTI      string `json:"jti,omitempty"`
-	Issuer   string `json:"issuer,omitempty"`
-	Subject  string `json:"subject,omitempty"`
+	Token    string    `json:"token"`
+	Kind     string    `json:"kind"`
+	ID       string    `json:"id"`
+	JTI      string    `json:"jti,omitempty"`
+	Issuer   string    `json:"issuer,omitempty"`
+	Subject  string    `json:"subject,omitempty"`
 	IssuedAt time.Time `json:"issuedAt"`
 	Expires  time.Time `json:"expires"`
 }
@@ -180,15 +180,15 @@ func NewRAPIDApplication(cfg *RAPIDConfig) (*RAPIDApplication, error) {
 	}
 
 	app := &RAPIDApplication{
-		cfg:        cfg,
-		podStore:   podStore,
+		cfg:         cfg,
+		podStore:    podStore,
 		staticStore: staticStore,
-		platform:   platform,
-		analyzer:   analyzer,
-		generator:  agent.NewWrapperGenerator(cfg.TemplateDir, logger),
-		pricing:    logger,
-		started:    time.Now().UTC(),
-		secret:     secret,
+		platform:    platform,
+		analyzer:    analyzer,
+		generator:   agent.NewWrapperGenerator(cfg.TemplateDir, logger),
+		pricing:     logger,
+		started:     time.Now().UTC(),
+		secret:      secret,
 	}
 	if err := app.ensureSchema(); err != nil {
 		return nil, err
@@ -417,9 +417,9 @@ func (a *RAPIDApplication) Wrappers() []WrapperRecord {
 // Share issues a revocable shepherd capability token.
 func (a *RAPIDApplication) Share(kind, id string, ttl time.Duration) (*Share, error) {
 	token := &Share{
-		Kind: kind,
-		ID:   id,
-		JTI:  slug(id),
+		Kind:  kind,
+		ID:    id,
+		JTI:   slug(id),
 		Token: slug(id) + "-" + fmt.Sprintf("%d", time.Now().Unix()),
 	}
 	// Mark the token as revoked so IsDenied returns true after revocation
@@ -471,30 +471,72 @@ func (a *RAPIDApplication) PublishDashboard(indexHTML []byte) error {
 func (a *RAPIDApplication) Handler(next http.Handler) http.Handler { return next }
 
 // Health is the live status of the platform RAPID is running on.
+// Health reports which modules are wired without touching them. Use
+// HealthCheck when the answer must reflect real availability.
 func (a *RAPIDApplication) Health() map[string]any {
-	components := map[string]bool{"rapid": a.cfg != nil}
-	return map[string]any{
-		"status":     "ok",
-		"ok":         true,
-		"timestamp":  time.Now().UTC().Format(time.RFC3339),
-		"version":    a.cfg.Version,
-		"platform":   "azzurro",
-		"components": components,
-		"data_dir":   a.cfg.DataDir,
+	components := map[string]bool{
+		"rapid":    a.cfg != nil,
+		"pod":      a.podStore != nil,
+		"song":     a.staticStore != nil,
+		"shepherd": a.platform != nil && a.platform.shepherd != nil,
+		"secrets":  a.platform != nil && len(a.platform.secrets) > 0,
 	}
+	return a.healthReport(components)
 }
 
-// HealthCheck is Health with a real probe of every module.
+// HealthCheck is Health with a real probe of every module. A module that is
+// wired but cannot answer degrades the report instead of being reported up.
 func (a *RAPIDApplication) HealthCheck() map[string]any {
 	components := map[string]bool{"rapid": a.cfg != nil}
+
+	if a.podStore == nil {
+		components["pod"] = false
+	} else {
+		_, err := a.podStore.ListTables()
+		components["pod"] = err == nil
+	}
+
+	if a.staticStore == nil {
+		components["song"] = false
+	} else {
+		_, err := a.staticStore.ListSilos()
+		components["song"] = err == nil
+	}
+
+	components["shepherd"] = a.platform != nil && a.platform.shepherd != nil && a.platform.shepherd.Manager() != nil
+	components["secrets"] = a.platform != nil && a.platform.secrets != nil
+
+	return a.healthReport(components)
+}
+
+// healthReport builds the JSON shape shared by Health and HealthCheck.
+func (a *RAPIDApplication) healthReport(components map[string]bool) map[string]any {
+	ok := true
+	for _, up := range components {
+		if !up {
+			ok = false
+			break
+		}
+	}
+	status := "ok"
+	if !ok {
+		status = "degraded"
+	}
+	version := ""
+	dataDir := ""
+	if a.cfg != nil {
+		version = a.cfg.Version
+		dataDir = a.cfg.DataDir
+	}
 	return map[string]any{
-		"status":     "degraded",
-		"ok":         false,
+		"service":    "rapid",
+		"status":     status,
+		"ok":         ok,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
-		"version":    a.cfg.Version,
+		"version":    version,
 		"platform":   "azzurro",
 		"components": components,
-		"data_dir":   a.cfg.DataDir,
+		"data_dir":   dataDir,
 	}
 }
 
@@ -533,9 +575,9 @@ func (a *RAPIDApplication) Metrics() map[string]any {
 
 // ExportTables is the whitelist of record sets an operator may export.
 var ExportTables = map[string]string{
-	"projects":   "name",
-	"analyses":   "analyzed_at",
-	"wrappers":   "created_at",
+	"projects": "name",
+	"analyses": "analyzed_at",
+	"wrappers": "created_at",
 }
 
 // Export writes one of RAPID's record sets in pod's shared JSON/CSV shape.
@@ -593,9 +635,12 @@ func templateTypeFor(files []agent.FileInfo) string {
 	counts := map[string]int{}
 	for _, f := range files {
 		switch f.Extension {
-		case ".go": counts["go-wrapper"]++
-		case ".py": counts["python-wrapper"]++
-		case ".js", ".ts", ".jsx", ".tsx": counts["node-wrapper"]++
+		case ".go":
+			counts["go-wrapper"]++
+		case ".py":
+			counts["python-wrapper"]++
+		case ".js", ".ts", ".jsx", ".tsx":
+			counts["node-wrapper"]++
 		}
 	}
 	best, bestN := "generic-wrapper", 0

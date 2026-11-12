@@ -82,6 +82,7 @@ func (s *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	http.NotFound(w, r)
 }
+
 // duplicating the HTML at "/". One document, one place to edit it.
 func (s *WebServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {

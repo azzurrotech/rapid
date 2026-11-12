@@ -46,12 +46,12 @@ type AnalysisResult struct {
 
 // TodoItem represents a task todo tracked during project analysis.
 type TodoItem struct {
-	ID        string   `json:"id"`        // unique identifier
-	Text      string   `json:"text"`      // the todo description
-	Category  string   `json:"category"`  // e.g., "refactor", "feature", "bugfix"
-	Priority  string   `json:"priority"`  // "low", "medium", "high", "critical"
-	Status    string   `json:"status"`    // "pending", "in_progress", "completed", "deferred"
-	Created   time.Time `json:"created"`   // when the todo was created
+	ID        string    `json:"id"`                  // unique identifier
+	Text      string    `json:"text"`                // the todo description
+	Category  string    `json:"category"`            // e.g., "refactor", "feature", "bugfix"
+	Priority  string    `json:"priority"`            // "low", "medium", "high", "critical"
+	Status    string    `json:"status"`              // "pending", "in_progress", "completed", "deferred"
+	Created   time.Time `json:"created"`             // when the todo was created
 	Completed time.Time `json:"completed,omitempty"` // when it was completed, if applicable
 }
 

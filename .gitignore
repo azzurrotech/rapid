@@ -38,12 +38,18 @@ secrets/
 *.o
 *.exe
 *.bin
+/main
+/rapid-cli
+/rapid-server
 
 # Coverage files
 coverage.out
 
 # Temporary backup files
 *.bak
+/generated_wrappers/
+/test_wrappers/
+/_generated_wrappers_backup/
 
 # System-specific files
 macos_ds_store

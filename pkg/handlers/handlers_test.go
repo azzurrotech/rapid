@@ -72,7 +72,6 @@ func TestHealthAndMetricsRoutes(t *testing.T) {
 		}
 	}
 
-
 	metrics := do(t, h, http.MethodGet, "/api/metrics", "")
 	if metrics.Code != http.StatusOK {
 		t.Fatalf("metrics status = %d", metrics.Code)
